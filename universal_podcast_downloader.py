@@ -11,11 +11,11 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from email.utils import parsedate_to_datetime
 
-# Konfiguration: URL des RSS-Feeds
-rss_url = "https://beispiel-url.de/podcast/feed.rss"
+# Konfiguration: URL des RSS-Feeds (Platzhalter)
+rss_url = "https://DEINE-PODCAST-URL.de/feed.rss"
 
-# Konfiguration: Zielverzeichnis
-download_folder = Path.home() / "Podcasts" / "MeinLieblingsPodcast"
+# Konfiguration: Zielverzeichnis (Standard: Unterordner im Benutzerverzeichnis)
+download_folder = Path.home() / "Podcasts" / "MeinPodcast"
 
 # HTTP-Header (Tarnung als Browser zur Umgehung von CDN-Blockaden)
 headers = {
@@ -93,14 +93,23 @@ for item in items:
             print(f"\033[90mÜberspringe: {file_path.name}\033[0m")
         else:
             print(f"\033[93mLade: {file_path.name}\033[0m")
-            try:
-                req_dl = urllib.request.Request(mp3_url, headers=headers)
-                with urllib.request.urlopen(req_dl, timeout=30) as resp, open(part_path, 'wb') as out:
-                    shutil.copyfileobj(resp, out)
-                part_path.rename(file_path)
-                print(f"\033[92mDownload erfolgreich.\033[0m")
-            except Exception as e:
-                if part_path.exists(): part_path.unlink()
-                print(f"\033[91mFehler: {e}\033[0m")
+            
+            # Retry-Logik für instabile Netzwerkverbindungen
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    req_dl = urllib.request.Request(mp3_url, headers=headers)
+                    # Timeout von 60 statt 30 Sekunden für große Specials
+                    with urllib.request.urlopen(req_dl, timeout=60) as resp, open(part_path, 'wb') as out:
+                        shutil.copyfileobj(resp, out)
+                    part_path.rename(file_path)
+                    print(f"\033[92mDownload erfolgreich nach Versuch {attempt+1}.\033[0m")
+                    break
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        print(f"\033[93mTimeout bei Versuch {attempt+1}, neuer Versuch...\033[0m")
+                    else:
+                        if part_path.exists(): part_path.unlink()
+                        print(f"\033[91mFehler nach {max_retries} Versuchen: {e}\033[0m")
 
 print("\033[92mSynchronisation abgeschlossen.\033[0m")
