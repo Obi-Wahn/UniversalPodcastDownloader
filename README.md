@@ -1,51 +1,52 @@
-# **Universal Podcast Downloader (PowerShell & Python)**
+# **Universal Podcast Downloader**
 
-Ein Projekt zum automatisierten Herunterladen und Archivieren von Podcasts aus RSS-Feeds. Dieses Repository bietet zwei gleichwertige, native Lösungen ohne externe Abhängigkeiten: Ein PowerShell-Skript (ideal für Windows) und ein Python-Skript (ideal für Linux und macOS).
+Ein Repository zur automatisierten Synchronisation von Podcast-Episoden aus RSS- oder Atom-Feeds. Das Projekt bietet zwei native Lösungen, die jeweils die spezifischen Stärken des Betriebssystems nutzen:
 
-Beide Skripte analysieren die XML-Struktur des angegebenen Feeds, validieren die Dateinamen, implementieren eine automatische Nummerierung der Episoden zur alphabetischen Sortierung und führen inkrementelle Downloads durch.
+1. **PowerShell-Skript (generic\_podcast\_downloader.ps1):** Optimiert für Windows-Umgebungen.  
+2. **Python-Skript (generic\_podcast\_downloader.py):** Optimiert für Linux (z. B. Fedora) und macOS.
+
+Beide Skripte sind hochgradig robust, nutzen keine externen Abhängigkeiten und folgen aktuellen Best-Practices für inkrementelle Downloads.
 
 ## **Funktionsumfang**
 
-* **Native Lösungen:** Nutzen Sie generic\_podcast\_downloader.ps1 unter Windows oder generic\_podcast\_downloader.py unter unixoiden Systemen.  
-* **Keine externen Abhängigkeiten:** Die Skripte nutzen ausschließlich integrierte Standardbibliotheken der jeweiligen Sprache.  
-* **Inkrementeller Download:** Überprüft das Zielverzeichnis und lädt ausschließlich fehlende Episoden herunter. Dies reduziert die Bandbreiten- und Speichernutzung.  
-* **Automatische Nummerierung:** Extrahiert die \<itunes:episode\>-Tags zur Bestimmung der Folgennummer. Sollten diese Tags fehlen, wird die Episodennummer automatisch auf Basis der Gesamtanzahl berechnet.  
-* **HTTP-Header-Anpassung:** Verwendet einen Standard-Browser-User-Agent für die HTTP-Anfragen, um etwaige Blockaden (z. B. "403 Forbidden") durch Podcast-Hoster zu vermeiden.  
-* **Fehlertoleranz:** Verarbeitet unkonventionelle XML-Strukturen und bereinigt für das Dateisystem ungültige Zeichen automatisch.
+* **Plattform-Native Lösungen:** Wählen Sie das Skript, das optimal zu Ihrem Betriebssystem passt.  
+* **Inkrementelle Synchronisation:** Existierende Dateien werden erkannt und übersprungen.  
+* **Sichere Dateinamen:** Automatische Bereinigung ungültiger Zeichen und Schutz vor Windows-reservierten Dateinamen (CON, NUL, etc.).  
+* **Intelligente Nummerierung:** Extrahiert Folgennummern aus \<itunes:episode\>-Tags. Fehlen diese, dient das Veröffentlichungsdatum (pubDate) als Fallback für die Sortierung.  
+* **Robustes Parsing:** XPath-basiertes Auslesen der XML-Struktur unterstützt sowohl RSS als auch Atom-Feeds und ignoriert Namespace-Probleme.  
+* **Streaming-Download:** Beide Skripte laden Dateien direkt auf die Festplatte (statt in den RAM) und nutzen .part-Dateien zur Vermeidung von korrupten Downloads bei Verbindungsabbrüchen.
 
 ## **Voraussetzungen**
 
-### **Für Windows (PowerShell-Version)**
+### **PowerShell (Windows)**
 
-Auf aktuellen Windows-Systemen ist PowerShell bereits vorinstalliert.
+* Standardmäßig auf Windows vorinstalliert.  
+* Sofern die Ausführung von Skripten blockiert ist, einmalig in der PowerShell ausführen:  
+  Set-ExecutionPolicy \-Scope CurrentUser \-ExecutionPolicy RemoteSigned
 
-*Hinweis:* Sofern die Ausführung von Skripten auf dem System standardmäßig deaktiviert ist, muss die Ausführungsrichtlinie in einer administrativen PowerShell einmalig angepasst werden:
+### **Python (Linux / macOS)**
 
-Set-ExecutionPolicy \-Scope CurrentUser \-ExecutionPolicy RemoteSigned
-
-### **Für Linux / macOS (Python-Version)**
-
-Stellen Sie sicher, dass **Python 3** installiert ist. Auf den meisten Linux-Distributionen (z. B. Fedora, Ubuntu) sowie macOS ist dies ab Werk der Fall.
+* Python 3 ist auf den meisten Distributionen (wie Fedora) vorinstalliert.  
+* Es sind keine pip-Installationen erforderlich; das Skript nutzt ausschließlich die Standardbibliothek.
 
 ## **Verwendung**
 
-### **Variante A: PowerShell (Windows)**
+### **Konfiguration**
 
-1. Öffnen Sie generic\_podcast\_downloader.ps1 in einem Texteditor und konfigurieren Sie die URL sowie den Download-Pfad im oberen Bereich:  
-   $rssUrl \= "\[https://DEINE-PODCAST-URL.de/feed.rss\](https://DEINE-PODCAST-URL.de/feed.rss)"  
-   $downloadFolder \= Join-Path \-Path $HOME \-ChildPath "Podcasts\\MeinLieblingsPodcast"
+Öffnen Sie das gewünschte Skript (.ps1 oder .py) in einem Editor und passen Sie die Variablen am Anfang der Datei an:
 
-2. Führen Sie das Skript via Rechtsklick \-\> "Mit PowerShell ausführen" oder im Terminal aus:  
-   .\\generic\_podcast\_downloader.ps1
+* $rssUrl / rss\_url: Die URL Ihres Podcast-Feeds.  
+* $downloadFolder / download\_folder: Ihr lokaler Zielpfad.
 
-### **Variante B: Python (Linux / macOS)**
+### **Ausführung**
 
-1. Öffnen Sie generic\_podcast\_downloader.py in einem Texteditor und konfigurieren Sie die URL sowie den Download-Pfad im oberen Bereich:  
-   rss\_url \= "\[https://DEINE-PODCAST-URL.de/feed.rss\](https://DEINE-PODCAST-URL.de/feed.rss)"  
-   download\_folder \= Path.home() / "Podcasts" / "MeinLieblingsPodcast"
+**Unter Windows (PowerShell):**
 
-2. Führen Sie das Skript in Ihrem Terminal aus:  
-   python3 generic\_podcast\_downloader.py
+.\\generic\_podcast\_downloader.ps1
+
+**Unter Linux / macOS (Python):**
+
+python3 generic\_podcast\_downloader.py
 
 ## **Lizenz**
 
