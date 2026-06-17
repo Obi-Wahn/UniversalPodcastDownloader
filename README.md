@@ -1,48 +1,51 @@
-# **Universal Podcast Downloader (PowerShell)**
+# **Universal Podcast Downloader (PowerShell & Python)**
 
-Ein plattformübergreifendes PowerShell-Skript zum automatisierten Herunterladen und Archivieren von Podcasts aus RSS-Feeds.
+Ein Projekt zum automatisierten Herunterladen und Archivieren von Podcasts aus RSS-Feeds. Dieses Repository bietet zwei gleichwertige, native Lösungen ohne externe Abhängigkeiten: Ein PowerShell-Skript (ideal für Windows) und ein Python-Skript (ideal für Linux und macOS).
 
-Das Skript analysiert die XML-Struktur des angegebenen Feeds, validiert die Dateinamen, implementiert eine automatische Nummerierung der Episoden zur alphabetischen Sortierung und führt inkrementelle Downloads durch.
+Beide Skripte analysieren die XML-Struktur des angegebenen Feeds, validieren die Dateinamen, implementieren eine automatische Nummerierung der Episoden zur alphabetischen Sortierung und führen inkrementelle Downloads durch.
 
 ## **Funktionsumfang**
 
-* **Plattformkompatibilität:** Unterstützt Windows (Windows PowerShell) und Linux (PowerShell Core / pwsh). Die Verzeichnispfade werden automatisch an das jeweilige Betriebssystem angepasst ($HOME).  
+* **Native Lösungen:** Nutzen Sie generic\_podcast\_downloader.ps1 unter Windows oder generic\_podcast\_downloader.py unter unixoiden Systemen.  
+* **Keine externen Abhängigkeiten:** Die Skripte nutzen ausschließlich integrierte Standardbibliotheken der jeweiligen Sprache.  
 * **Inkrementeller Download:** Überprüft das Zielverzeichnis und lädt ausschließlich fehlende Episoden herunter. Dies reduziert die Bandbreiten- und Speichernutzung.  
-* **Automatische Nummerierung:** Extrahiert die \<itunes:episode\>-Tags zur Bestimmung der Folgennummer. Sollten diese Tags fehlen, berechnet das Skript die Episodennummer automatisch auf Basis der Gesamtanzahl der Listeneinträge.  
-* **HTTP-Header-Anpassung:** Verwendet einen Standard-Browser-User-Agent für die HTTP-Anfragen, um etwaige Blockaden (z. B. "403 Forbidden") durch Podcast-Hoster oder Content Delivery Networks zu vermeiden.  
-* **Fehlertoleranz:** Verarbeitet unkonventionelle XML-Strukturen (z. B. mehrfach vorhandene Titel-Tags) und bereinigt für das Dateisystem ungültige Zeichen automatisch.
+* **Automatische Nummerierung:** Extrahiert die \<itunes:episode\>-Tags zur Bestimmung der Folgennummer. Sollten diese Tags fehlen, wird die Episodennummer automatisch auf Basis der Gesamtanzahl berechnet.  
+* **HTTP-Header-Anpassung:** Verwendet einen Standard-Browser-User-Agent für die HTTP-Anfragen, um etwaige Blockaden (z. B. "403 Forbidden") durch Podcast-Hoster zu vermeiden.  
+* **Fehlertoleranz:** Verarbeitet unkonventionelle XML-Strukturen und bereinigt für das Dateisystem ungültige Zeichen automatisch.
 
-## **Voraussetzungen und Installation**
+## **Voraussetzungen**
 
-### **Windows**
+### **Für Windows (PowerShell-Version)**
 
-Auf aktuellen Windows-Systemen ist PowerShell bereits vorinstalliert. Es ist keine zusätzliche Software erforderlich.
+Auf aktuellen Windows-Systemen ist PowerShell bereits vorinstalliert.
 
-*Hinweis:* Sofern die Ausführung von Skripten auf dem System standardmäßig deaktiviert ist, muss die Ausführungsrichtlinie einmalig über eine administrative PowerShell-Sitzung oder für den aktuellen Benutzer angepasst werden:
+*Hinweis:* Sofern die Ausführung von Skripten auf dem System standardmäßig deaktiviert ist, muss die Ausführungsrichtlinie in einer administrativen PowerShell einmalig angepasst werden:
 
 Set-ExecutionPolicy \-Scope CurrentUser \-ExecutionPolicy RemoteSigned
 
-### **Linux**
+### **Für Linux / macOS (Python-Version)**
 
-Unter Linux wird **PowerShell Core** (pwsh) vorausgesetzt.
-
-Auf Ubuntu- und Debian-basierten Distributionen erfolgt die Installation über den Paketmanager:
-
-sudo apt update  
-sudo apt install powershell
-
-*Für weitere Distributionen (z. B. Fedora, Arch Linux) wird auf die [offizielle Microsoft-Dokumentation](https://learn.microsoft.com/de-de/powershell/scripting/install/installing-powershell-on-linux) verwiesen.*
+Stellen Sie sicher, dass **Python 3** installiert ist. Auf den meisten Linux-Distributionen (z. B. Fedora, Ubuntu) sowie macOS ist dies ab Werk der Fall.
 
 ## **Verwendung**
 
-1. Laden Sie die Datei generic\_podcast\_downloader.ps1 herunter.  
-2. Öffnen Sie das Skript in einem Texteditor und konfigurieren Sie die Variablen für die Feed-URL und das Download-Verzeichnis im oberen Bereich der Datei:  
-   $rssUrl \= "\[https://DEINE-PODCAST-URL.de/feed.rss\](https://DEINE-PODCAST-URL.de/feed.rss)"  
-   $downloadFolder \= Join-Path \-Path $HOME \-ChildPath "Podcasts/MeinLieblingsPodcast"
+### **Variante A: PowerShell (Windows)**
 
-3. Führen Sie das Skript aus:  
-   * **Windows:** Rechtsklick auf die .ps1-Datei \-\> "Mit PowerShell ausführen" (oder Aufruf im Terminal via .\\generic\_podcast\_downloader.ps1).  
-   * **Linux:** Aufruf im Terminal über den Befehl pwsh generic\_podcast\_downloader.ps1.
+1. Öffnen Sie generic\_podcast\_downloader.ps1 in einem Texteditor und konfigurieren Sie die URL sowie den Download-Pfad im oberen Bereich:  
+   $rssUrl \= "\[https://DEINE-PODCAST-URL.de/feed.rss\](https://DEINE-PODCAST-URL.de/feed.rss)"  
+   $downloadFolder \= Join-Path \-Path $HOME \-ChildPath "Podcasts\\MeinLieblingsPodcast"
+
+2. Führen Sie das Skript via Rechtsklick \-\> "Mit PowerShell ausführen" oder im Terminal aus:  
+   .\\generic\_podcast\_downloader.ps1
+
+### **Variante B: Python (Linux / macOS)**
+
+1. Öffnen Sie generic\_podcast\_downloader.py in einem Texteditor und konfigurieren Sie die URL sowie den Download-Pfad im oberen Bereich:  
+   rss\_url \= "\[https://DEINE-PODCAST-URL.de/feed.rss\](https://DEINE-PODCAST-URL.de/feed.rss)"  
+   download\_folder \= Path.home() / "Podcasts" / "MeinLieblingsPodcast"
+
+2. Führen Sie das Skript in Ihrem Terminal aus:  
+   python3 generic\_podcast\_downloader.py
 
 ## **Lizenz**
 
