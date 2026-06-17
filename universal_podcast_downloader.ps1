@@ -1,5 +1,5 @@
 # ==============================================================================
-# Universal Podcast Downloader (PowerShell Version - Refactored & Optimized)
+# Universal Podcast Downloader (PowerShell Version - Ultimate Edition)
 # ==============================================================================
 
 # Konfiguration: URL des RSS-Feeds
@@ -25,49 +25,68 @@ if (-not (Test-Path -Path $downloadFolder)) {
     Write-Host "Verzeichnis erstellt: $downloadFolder" -ForegroundColor Green
 }
 
-Write-Host "Analysiere RSS-Feed: $rssUrl" -ForegroundColor Cyan
+Write-Host "Analysiere Feed: $rssUrl" -ForegroundColor Cyan
 
 # 2. HTTP-Anfrage durchführen und XML-Struktur parsen
 try {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    # TLS-Sicherheitsprotokolle anpassen (nur nötig auf älteren Windows PowerShell 5.1 Systemen)
+    if ($PSVersionTable.PSEdition -eq "Desktop") {
+        # TLS 1.2 und 1.3 (falls vom OS unterstützt) explizit aktivieren
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor 3072
+    }
+    
     # Timeout von 30 Sekunden verhindert endloses Blockieren
     $response = Invoke-WebRequest -Uri $rssUrl -UserAgent $userAgent -UseBasicParsing -TimeoutSec 30
     [xml]$feed = $response.Content
 } catch {
-    Write-Error "Fehler beim Abruf oder Parsing des RSS-Feeds. Bitte überprüfen Sie die URL."
-    Write-Error $_
-    exit 1
+    # throw statt exit für bessere Fehlerbehandlung, falls das Skript importiert wird
+    throw "Fehler beim Abruf oder Parsing des Feeds. Bitte überprüfen Sie die URL. Details: $_"
 }
 
-# Extraktion der Episoden
-$items = $feed.rss.channel.item
+# 3. Extraktion der Episoden (Unterstützt RSS <item> und Atom <entry> per XPath)
+$items = $feed.SelectNodes("//*[local-name()='item' or local-name()='entry']")
 
-if ($null -eq $items) {
-    Write-Error "Es konnten keine Episoden extrahiert werden."
-    exit 1
+if (-not $items -or $items.Count -eq 0) {
+    throw "Es konnten keine Episoden extrahiert werden. Möglicherweise ist die XML-Struktur ungültig."
 }
 
-Write-Host "$($items.Count) Episoden im Feed detektiert. Starte Synchronisation..." -ForegroundColor Cyan
+Write-Host "$($items.Count) Episoden detektiert. Starte Synchronisation..." -ForegroundColor Cyan
 
-# 3. Iteration über alle extrahierten Episoden
+# 4. Iteration über alle extrahierten Episoden
 foreach ($item in $items) {
-    # Robuster Umgang mit leeren Tags
-    $titleRaw = $item.title | Select-Object -First 1
-    $title = if (-not [string]::IsNullOrWhiteSpace($titleRaw)) { [string]$titleRaw.Trim() } else { "Unbekannte_Episode" }
+    # Robuste Titel-Extraktion (ignoriert Namespaces)
+    $titleNode = $item.SelectSingleNode("*[local-name()='title']")
+    $title = if ($titleNode -and -not [string]::IsNullOrWhiteSpace($titleNode.InnerText)) { $titleNode.InnerText.Trim() } else { "Unbekannte_Episode" }
     
-    $enclosure = $item.enclosure | Select-Object -First 1
+    # Extraktion der URL (Unterstützt RSS <enclosure> und Atom <link rel="enclosure">)
+    $mp3Url = $null
+    $enclosure = $item.SelectSingleNode("*[local-name()='enclosure']")
+    
+    if ($enclosure -and $enclosure.HasAttribute("url")) {
+        $mp3Url = $enclosure.GetAttribute("url")
+    } else {
+        $linkNode = $item.SelectSingleNode("*[local-name()='link' and @rel='enclosure']")
+        if ($linkNode -and $linkNode.HasAttribute("href")) {
+            $mp3Url = $linkNode.GetAttribute("href")
+        }
+    }
 
     # Validierung der Dateianlage
-    if ($null -ne $enclosure -and $null -ne $enclosure.url) {
-        $mp3Url = [string]$enclosure.url
+    if (-not [string]::IsNullOrWhiteSpace($mp3Url)) {
 
-        # Validierung des Dateinamens: Bereinigung ungültiger Zeichen
+        # Kosmetische Bereinigung
+        $safeTitle = $title.Replace(':', ' -').Replace('?', '').Replace('/', '-').Trim()
+        
+        # Windows-System Bereinigung ungültiger Zeichen
         $invalidChars = [System.IO.Path]::GetInvalidFileNameChars()
-        $safeTitle = $title
         foreach ($char in $invalidChars) {
             $safeTitle = $safeTitle.Replace($char, '-')
         }
-        $safeTitle = $safeTitle.Replace(':', ' -').Replace('?', '').Replace('/', '-').Trim()
+
+        # Dateinamen-Längenlimit (Windows MAX_PATH ist oft 260 Zeichen, wir limitieren sicherheitshalber auf 150)
+        if ($safeTitle.Length -gt 150) {
+            $safeTitle = $safeTitle.Substring(0, 150).Trim()
+        }
 
         # Prüfung auf reservierte Windows-Dateinamen
         if ($reservedNames -contains $safeTitle.ToUpper()) {
@@ -76,20 +95,17 @@ foreach ($item in $items) {
 
         # Bestimmung des Präfix (Episodennummer oder Publikationsdatum)
         $prefix = ""
-        $epNum = $null
         
-        # Präferenz 1: iTunes-Tag
-        if ($null -ne $item.episode) { $epNum = [string]($item.episode | Select-Object -First 1) }
-        elseif ($null -ne $item."itunes:episode") { $epNum = [string]($item."itunes:episode" | Select-Object -First 1) }
-
-        if (-not [string]::IsNullOrWhiteSpace($epNum) -and $epNum -match "^\d+$") {
-            $prefix = "{0:D3} - " -f [int]$epNum
+        # Präferenz 1: Episodennummer (Namespace-unabhängig via XPath)
+        $epNode = $item.SelectSingleNode("*[local-name()='episode']")
+        if ($epNode -and $epNode.InnerText -match "^\d+$") {
+            $prefix = "{0:D3} - " -f [int]($epNode.InnerText.Trim())
         } else {
-            # Präferenz 2 (Fallback): Publikationsdatum nutzen
-            $pubDateRaw = $item.pubDate | Select-Object -First 1
-            if (-not [string]::IsNullOrWhiteSpace($pubDateRaw)) {
+            # Präferenz 2 (Fallback): Publikationsdatum nutzen (Unterstützt RSS pubDate und Atom published/updated)
+            $pubDateNode = $item.SelectSingleNode("*[local-name()='pubDate' or local-name()='published' or local-name()='updated']")
+            if ($pubDateNode -and -not [string]::IsNullOrWhiteSpace($pubDateNode.InnerText)) {
                 try {
-                    $dt = [datetime]$pubDateRaw
+                    $dt = [datetime]($pubDateNode.InnerText)
                     $prefix = $dt.ToString("yyyy-MM-dd") + " - "
                 } catch {
                     # Ignorieren, falls das Datum nicht geparst werden kann
@@ -110,7 +126,7 @@ foreach ($item in $items) {
         # Temporäre Datei für den Download (.part)
         $partPath = $filePath + ".part"
 
-        # 4. Inkrementeller Download
+        # 5. Inkrementeller Download
         if (Test-Path -Path $filePath) {
             Write-Host "Überspringe (Datei bereits vorhanden): $fileName" -ForegroundColor DarkGray
         } else {
@@ -119,8 +135,8 @@ foreach ($item in $items) {
                 # -OutFile schreibt direkt auf die Festplatte (Streaming), RAM wird nicht überlastet
                 Invoke-WebRequest -Uri $mp3Url -OutFile $partPath -UserAgent $userAgent -UseBasicParsing -TimeoutSec 30
                 
-                # Nach erfolgreichem Download: Umbenennen zur finalen Datei
-                Rename-Item -Path $partPath -NewName $fileName -Force
+                # Move-Item statt Rename-Item (robuster bei absoluten Pfaden)
+                Move-Item -Path $partPath -Destination $filePath -Force
                 Write-Host "Download erfolgreich: $fileName" -ForegroundColor Green
             } catch {
                 Write-Error "Fehler beim Download von $fileName"
