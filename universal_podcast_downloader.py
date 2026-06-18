@@ -99,9 +99,12 @@ for item in items:
             for attempt in range(max_retries):
                 try:
                     req_dl = urllib.request.Request(mp3_url, headers=headers)
-                    # Timeout von 60 statt 30 Sekunden für große Specials
-                    with urllib.request.urlopen(req_dl, timeout=60) as resp, open(part_path, 'wb') as out:
-                        shutil.copyfileobj(resp, out)
+                    # Timeout hochgesetzt auf 120 Sekunden, um auch langsame Server-Antworten bei großen Dateien abzufangen
+                    with urllib.request.urlopen(req_dl, timeout=120) as resp, open(part_path, 'wb') as out:
+                        # WICHTIG: length=1024*1024 liest die Daten in 1-MB-Blöcken statt der standardmäßigen 16 KB.
+                        # Das reduziert die Anfälligkeit für "Read operation timed out" drastisch.
+                        shutil.copyfileobj(resp, out, length=1024*1024)
+                        
                     part_path.rename(file_path)
                     print(f"\033[92mDownload erfolgreich nach Versuch {attempt+1}.\033[0m")
                     break
