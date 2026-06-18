@@ -35,7 +35,7 @@ try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor 3072
     }
     
-    # Timeout von 30 Sekunden verhindert endloses Blockieren
+    # Timeout von 30 Sekunden verhindert endloses Blockieren (für den Feed-Abruf reicht das)
     $response = Invoke-WebRequest -Uri $rssUrl -UserAgent $userAgent -UseBasicParsing -TimeoutSec 30
     [xml]$feed = $response.Content
 } catch {
@@ -126,25 +126,36 @@ foreach ($item in $items) {
         # Temporäre Datei für den Download (.part)
         $partPath = $filePath + ".part"
 
-        # 5. Inkrementeller Download
+        # 5. Inkrementeller Download mit Retry-Logik und 60 Sekunden Timeout
         if (Test-Path -Path $filePath) {
             Write-Host "Überspringe (Datei bereits vorhanden): $fileName" -ForegroundColor DarkGray
         } else {
-            Write-Host "Download gestartet: $fileName" -ForegroundColor Yellow
-            try {
-                # -OutFile schreibt direkt auf die Festplatte (Streaming), RAM wird nicht überlastet
-                Invoke-WebRequest -Uri $mp3Url -OutFile $partPath -UserAgent $userAgent -UseBasicParsing -TimeoutSec 30
-                
-                # Move-Item statt Rename-Item (robuster bei absoluten Pfaden)
-                Move-Item -Path $partPath -Destination $filePath -Force
-                Write-Host "Download erfolgreich: $fileName" -ForegroundColor Green
-            } catch {
-                Write-Error "Fehler beim Download von $fileName"
-                Write-Error $_
-                
-                # Temporäre Datei bei Fehler aufräumen
-                if (Test-Path -Path $partPath) {
-                    Remove-Item -Path $partPath -Force
+            $maxRetries = 3
+            
+            for ($attempt = 1; $attempt -le $maxRetries; $attempt++) {
+                Write-Host "Download gestartet ($attempt/$maxRetries): $fileName" -ForegroundColor Yellow
+                try {
+                    # -OutFile schreibt direkt auf die Festplatte (Streaming), RAM wird nicht überlastet. Timeout auf 60 erhöht.
+                    Invoke-WebRequest -Uri $mp3Url -OutFile $partPath -UserAgent $userAgent -UseBasicParsing -TimeoutSec 60
+                    
+                    # Move-Item statt Rename-Item (robuster bei absoluten Pfaden)
+                    Move-Item -Path $partPath -Destination $filePath -Force
+                    Write-Host "Download erfolgreich: $fileName" -ForegroundColor Green
+                    
+                    # Schleife abbrechen, da Download erfolgreich war
+                    break 
+                } catch {
+                    if ($attempt -lt $maxRetries) {
+                        Write-Host "Timeout oder Fehler bei Versuch $attempt, probiere es noch einmal..." -ForegroundColor DarkYellow
+                    } else {
+                        Write-Error "Fehler nach $maxRetries Versuchen beim Download von $fileName"
+                        Write-Error $_
+                        
+                        # Temporäre Datei erst nach dem letzten fehlgeschlagenen Versuch aufräumen
+                        if (Test-Path -Path $partPath) {
+                            Remove-Item -Path $partPath -Force
+                        }
+                    }
                 }
             }
         }
