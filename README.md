@@ -11,10 +11,11 @@ Das Projekt ist darauf ausgelegt, große Audiodateien zuverlässig herunterzulad
 
 * **Echtes Download-Resume:** Bricht die Netzwerkverbindung ab, fangen die Skripte dank Range-Headern nicht von vorne an, sondern setzen den Download bytegenau an der Abbruchstelle fort.  
 * **Speicherschonendes Chunking:** Dateien werden in 1-MB-Blöcken verarbeitet. Der Arbeitsspeicher (RAM) läuft auch bei riesigen Sonderfolgen nicht über.  
-* **Fortschrittsanzeige & Logging:** Live-Fortschrittsbalken im Terminal sowie strukturierte Status- und Fehlermeldungen mit Zeitstempel.  
+* **Fortschrittsanzeige & Logging:** Live-Fortschrittsbalken im Terminal (inklusive Fallback bei unbekannten Dateigrößen) sowie strukturierte Status- und Fehlermeldungen mit Zeitstempel.  
 * **Retry-Logik mit Exponentiellem Backoff:** Bei Timeouts probieren die Skripte es automatisch erneut und verdoppeln dabei schonend die Wartezeit (2s, 4s, 8s...).  
 * **Dynamische Meta-Auswertung:** Intelligentes Auslesen von \<itunes:episode\> für die Nummerierung oder Fallback auf das Veröffentlichungsdatum. Die Dateiendung (.mp3, .m4a, etc.) wird dynamisch aus der URL abgeleitet.  
-* **Absolute Dateisystem-Sicherheit:** Bereinigung von Sonderzeichen, Begrenzung auf 150 Zeichen (Schutz vor MAX\_PATH-Fehlern) und Abfangen von reservierten Windows-Systemnamen (wie CON oder PRN).
+* **Absolute Dateisystem-Sicherheit:** Bereinigung von Sonderzeichen, Begrenzung auf 150 Zeichen (Schutz vor MAX\_PATH-Fehlern) und Abfangen von reservierten Windows-Systemnamen (wie CON oder PRN).  
+* **Dry-Run Modus:** Testen Sie das Parsing und die Namensgenerierung des Feeds risikolos, ohne Daten herunterzuladen.
 
 ## **Konfiguration**
 
@@ -34,12 +35,17 @@ Alternativ lassen sich die Skripte für maximale Flexibilität über **Kommandoz
 | \--output | \-o | Absoluter Pfad zum Zielverzeichnis. | \~/Podcasts/MeinPodcast |
 | \--limit | \-l | Lädt nur die neuesten N Episoden (0 \= alle). | 0 |
 | \--retries |  | Maximale Anzahl der Fehler-Wiederholungen. | 3 |
+| \--timeout | \-t | Netzwerk-Timeout in Sekunden. | 60 |
+| \--dry-run |  | Simuliert den Vorgang, ohne herunterzuladen. | False |
 | \--help | \-h | Zeigt die integrierte Hilfeseite an. | \- |
 
 **Beispiele:**
 
 \# Standard-Download mit den Werten aus dem Skript-Header  
 python3 universal\_podcast\_downloader.py
+
+\# Simulierter Lauf (Dry-Run), um zu sehen, was passieren würde  
+python3 universal\_podcast\_downloader.py \--dry-run
 
 \# Nur die neuesten 5 Folgen eines spezifischen Feeds laden  
 python3 universal\_podcast\_downloader.py \-u "\[https://beispiel.de/feed.rss\](https://beispiel.de/feed.rss)" \-l 5
@@ -49,9 +55,7 @@ python3 universal\_podcast\_downloader.py \-o "/home/nutzer/Archiv" \--retries 5
 
 ## **🪟 Nutzung der PowerShell-Variante (Windows)**
 
-**Voraussetzung:** Windows PowerShell 5.1 oder neuer (auch PowerShell Core 7+ kompatibel).
-
-*Hinweis: Möglicherweise müssen Sie die Skriptausführung einmalig erlauben (Set-ExecutionPolicy \-Scope CurrentUser \-ExecutionPolicy RemoteSigned).*
+**Voraussetzung:** Windows PowerShell 5.1 oder neuer (auch PowerShell Core 7+ kompatibel). *Hinweis: Möglicherweise müssen Sie die Skriptausführung einmalig erlauben (Set-ExecutionPolicy \-Scope CurrentUser \-ExecutionPolicy RemoteSigned).*
 
 ### **CLI-Parameter (PowerShell)**
 
@@ -61,11 +65,16 @@ python3 universal\_podcast\_downloader.py \-o "/home/nutzer/Archiv" \--retries 5
 | \-Output | Absoluter Pfad zum Zielverzeichnis. | $HOME\\Podcasts\\MeinPodcast |
 | \-Limit | Lädt nur die neuesten N Episoden (0 \= alle). | 0 |
 | \-Retries | Maximale Anzahl der Fehler-Wiederholungen. | 3 |
+| \-TimeoutSec | Netzwerk-Timeout in Sekunden. | 60 |
+| \-DryRun | Simuliert den Vorgang, ohne herunterzuladen. | $false |
 
 **Beispiele:**
 
 \# Standard-Download per Konsole  
 .\\universal\_podcast\_downloader.ps1
+
+\# Simulierter Lauf (Dry-Run), um den Dateinamen zu prüfen  
+.\\universal\_podcast\_downloader.ps1 \-DryRun
 
 \# Spezifischen Podcast in ein neues Laufwerk laden  
 .\\universal\_podcast\_downloader.ps1 \-Url "\[https://beispiel.de/feed.rss\](https://beispiel.de/feed.rss)" \-Output "D:\\Podcast-Archiv"
