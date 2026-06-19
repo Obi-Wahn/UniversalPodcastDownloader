@@ -1,3 +1,4 @@
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     Universal Podcast Downloader (PowerShell Version)
@@ -20,14 +21,20 @@ param (
     [int]$Limit = 0,
 
     # Maximale Anzahl der Download-Versuche bei Netzwerkfehlern:
-    [int]$Retries = 3
+    [int]$Retries = 3,
+
+    # Timeout für Netzwerkverbindungen in Sekunden:
+    [int]$TimeoutSec = 60,
+
+    # Simuliert den Vorgang, ohne Dateien tatsächlich herunterzuladen:
+    [switch]$DryRun
 )
 
 # Generischer User-Agent gegen CDN-Blockaden und für Datenschutz
 $UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
-# Reservierte Windows-Namen abfangen
-$Global:ReservedNames = @("CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9")
+# Reservierte Windows-Namen auf Skript-Ebene abfangen (verhindert Beeinflussung anderer Skripte)
+$script:ReservedNames = @("CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9")
 
 # ------------------------------------------------------------------------------
 # HILFSFUNKTIONEN
@@ -50,7 +57,7 @@ function Get-SafeFileName {
     param([string]$Title)
     $safeTitle = $Title -replace '[<>:"/\\|?*]', '-'
     if ($safeTitle.Length -gt 150) { $safeTitle = $safeTitle.Substring(0, 150).Trim() }
-    if ($Global:ReservedNames -contains $safeTitle.ToUpper()) { $safeTitle = "Episode_$safeTitle" }
+    if ($script:ReservedNames -contains $safeTitle.ToUpper()) { $safeTitle = "Episode_$safeTitle" }
     return $safeTitle.Trim()
 }
 
@@ -59,15 +66,17 @@ function Invoke-RobustDownload {
         [string]$DownloadUrl,
         [string]$FinalPath,
         [string]$PartPath,
-        [int]$MaxRetries
+        [int]$MaxRetries,
+        [int]$TimeoutSec
     )
 
     for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+        $progressStarted = $false
         try {
             # Direkter Zugriff auf .NET HttpWebRequest für Chunking und Range-Headers
             $request = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($DownloadUrl)
             $request.UserAgent = $UserAgent
-            $request.Timeout = 60000 # 60 Sekunden Timeout
+            $request.Timeout = $TimeoutSec * 1000 # Umrechnung in Millisekunden
 
             $initialSize = 0
             $appendMode = $false
@@ -82,7 +91,9 @@ function Invoke-RobustDownload {
             }
 
             $response = $request.GetResponse()
-            $totalSize = $response.ContentLength + $initialSize
+            
+            # ContentLength-Bug Fix: -1 abfangen
+            $totalSize = if ($response.ContentLength -ge 0) { $response.ContentLength + $initialSize } else { 0 }
             
             # Prüfen, ob der Server Resume (206 Partial Content) unterstützt
             $isPartial = ($response.StatusCode -eq [System.Net.HttpStatusCode]::PartialContent)
@@ -103,29 +114,31 @@ function Invoke-RobustDownload {
 
             $buffer = New-Object byte[] (1024 * 1024) # 1 MB Puffer
             $downloaded = $initialSize
+            $progressStarted = $true
 
             try {
                 while (($read = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
                     $fileStream.Write($buffer, 0, $read)
                     $downloaded += $read
 
-                    # PowerShell Fortschrittsbalken
+                    # PowerShell Fortschrittsbalken (inklusive Handhabung unbekannter Größen)
                     if ($totalSize -gt 0) {
                         $pct = ($downloaded / $totalSize) * 100
                         $statusText = "{0:N1} MB / {1:N1} MB" -f ($downloaded / 1MB), ($totalSize / 1MB)
                         Write-Progress -Activity "Lade herunter: $(Split-Path $FinalPath -Leaf)" -Status $statusText -PercentComplete $pct
+                    } else {
+                        $statusText = "{0:N1} MB geladen (Gesamtgröße unbekannt)" -f ($downloaded / 1MB)
+                        Write-Progress -Activity "Lade herunter: $(Split-Path $FinalPath -Leaf)" -Status $statusText
                     }
                 }
             } finally {
-                # Ressourcen sauber freigeben
                 if ($fileStream) { $fileStream.Close() }
                 if ($responseStream) { $responseStream.Close() }
                 if ($response) { $response.Close() }
+                if ($progressStarted) { Write-Progress -Activity "Lade herunter: $(Split-Path $FinalPath -Leaf)" -Completed }
             }
-            
-            Write-Progress -Activity "Lade herunter: $(Split-Path $FinalPath -Leaf)" -Completed
 
-            # Größenprüfung am Ende
+            # Größenprüfung am Ende (nur wenn Gesamtgröße vom Server mitgeteilt wurde)
             if ($totalSize -gt 0 -and $downloaded -lt $totalSize) {
                 throw "Download unvollständig (Verbindung abgerissen)."
             }
@@ -135,7 +148,7 @@ function Invoke-RobustDownload {
             return # Erfolg! Schleife verlassen.
 
         } catch {
-            Write-Progress -Activity "Lade herunter: $(Split-Path $FinalPath -Leaf)" -Completed
+            if ($progressStarted) { Write-Progress -Activity "Lade herunter: $(Split-Path $FinalPath -Leaf)" -Completed }
             $errMsg = $_.Exception.Message
             
             if ($attempt -lt $MaxRetries) {
@@ -144,7 +157,6 @@ function Invoke-RobustDownload {
                 Start-Sleep -Seconds $sleepTime
             } else {
                 Write-Log "Endgültig fehlgeschlagen nach $MaxRetries Versuchen: $errMsg" -Level "ERROR"
-                # Part-Datei bleibt für späteren Resume erhalten
             }
         }
     }
@@ -155,16 +167,21 @@ function Invoke-RobustDownload {
 # ------------------------------------------------------------------------------
 
 # 1. Zielverzeichnis sichern
-if (-not (Test-Path -Path $Output)) {
+if (-not $DryRun -and -not (Test-Path -Path $Output)) {
     New-Item -ItemType Directory -Path $Output | Out-Null
     Write-Log "Verzeichnis erstellt: $Output" -Level "SUCCESS"
 }
 
 Write-Log "Analysiere Feed: $Url"
 
-# TLS anpassen für ältere PowerShell-Versionen
+# TLS anpassen für ältere PowerShell-Versionen (Vermeidung magischer Nummern)
 if ($PSVersionTable.PSEdition -eq "Desktop") {
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor 3072
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+    } catch {
+        # Fallback, falls .NET-Version kein Tls13 Enum kennt
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    }
 }
 
 try {
@@ -172,7 +189,7 @@ try {
     [xml]$feed = $feedRequest.Content
 } catch {
     Write-Log "Fehler beim Abruf oder Parsing des Feeds. Details: $_" -Level "ERROR"
-    exit
+    exit 1
 }
 
 # 2. Episoden namespace-unabhängig auslesen (RSS + Atom)
@@ -180,12 +197,11 @@ $items = $feed.SelectNodes("//*[local-name()='item' or local-name()='entry']")
 
 if (-not $items -or $items.Count -eq 0) {
     Write-Log "Keine Episoden im XML gefunden." -Level "ERROR"
-    exit
+    exit 1
 }
 
 # Limit anwenden
 if ($Limit -gt 0) {
-    # Nimm die neuesten X Episoden
     $items = $items | Select-Object -First $Limit
     Write-Log "Limit aktiv: Verarbeite nur die neuesten $Limit Episoden."
 } else {
@@ -197,16 +213,16 @@ foreach ($item in $items) {
     $titleNode = $item.SelectSingleNode("*[local-name()='title']")
     $title = if ($titleNode) { $titleNode.InnerText.Trim() } else { "Unbekannte_Episode" }
     
-    $mp3Url = $null
+    $mediaUrl = $null
     $enclosure = $item.SelectSingleNode("*[local-name()='enclosure']")
     if ($enclosure -and $enclosure.HasAttribute("url")) {
-        $mp3Url = $enclosure.GetAttribute("url")
+        $mediaUrl = $enclosure.GetAttribute("url")
     } else {
         $linkNode = $item.SelectSingleNode("*[local-name()='link' and @rel='enclosure']")
-        if ($linkNode -and $linkNode.HasAttribute("href")) { $mp3Url = $linkNode.GetAttribute("href") }
+        if ($linkNode -and $linkNode.HasAttribute("href")) { $mediaUrl = $linkNode.GetAttribute("href") }
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($mp3Url)) {
+    if (-not [string]::IsNullOrWhiteSpace($mediaUrl)) {
         
         $safeTitle = Get-SafeFileName -Title $title
         
@@ -218,12 +234,16 @@ foreach ($item in $items) {
         } else {
             $pubDateNode = $item.SelectSingleNode("*[local-name()='pubDate' or local-name()='published' or local-name()='updated']")
             if ($pubDateNode) { 
-                try { $prefix = ([datetime]$pubDateNode.InnerText).ToString("yyyy-MM-dd") + " - " } catch {} 
+                try { 
+                    $prefix = ([datetime]$pubDateNode.InnerText).ToString("yyyy-MM-dd") + " - " 
+                } catch {
+                    Write-Log "Datumsformat unbekannt für '$title'" -Level "WARN"
+                } 
             }
         }
         
         # Dynamische Dateiendung
-        $urlWithoutQuery = $mp3Url.Split('?')[0]
+        $urlWithoutQuery = $mediaUrl.Split('?')[0]
         $extension = [System.IO.Path]::GetExtension($urlWithoutQuery)
         if ([string]::IsNullOrWhiteSpace($extension)) { $extension = ".mp3" }
 
@@ -234,8 +254,12 @@ foreach ($item in $items) {
         if (Test-Path -Path $filePath) {
             Write-Log "Überspringe (bereits vorhanden): $fileName"
         } else {
-            Write-Log "Starte Download: $fileName"
-            Invoke-RobustDownload -DownloadUrl $mp3Url -FinalPath $filePath -PartPath $partPath -MaxRetries $Retries
+            if ($DryRun) {
+                Write-Log "DRY-RUN: Würde Datei herunterladen: $fileName" -Level "INFO"
+            } else {
+                Write-Log "Starte Download: $fileName"
+                Invoke-RobustDownload -DownloadUrl $mediaUrl -FinalPath $filePath -PartPath $partPath -MaxRetries $Retries -TimeoutSec $TimeoutSec
+            }
         }
     }
 }
