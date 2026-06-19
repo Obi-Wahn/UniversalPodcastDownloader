@@ -1,49 +1,78 @@
 # **Universal Podcast Downloader**
 
-Dieses Repository enthält zwei native, robuste Skripte (PowerShell und Python) zur automatisierten Synchronisation und Archivierung von Podcast-Episoden aus RSS- oder Atom-Feeds. Das Projekt ist darauf ausgelegt, große Audiodateien zuverlässig herunterzuladen und Dateisystemfehler bei der Benennung proaktiv zu verhindern.
+Dieses Repository enthält zwei native, robuste Kommandozeilen-Werkzeuge (PowerShell und Python) zur automatisierten Synchronisation und Archivierung von Podcast-Episoden aus RSS- oder Atom-Feeds.
 
-Das Repository bietet für jede Systemumgebung das passende Werkzeug, welches vollständig mit Bordmitteln arbeitet und **keine externen Module oder Abhängigkeiten** (wie pip install) benötigt.
+Das Projekt ist darauf ausgelegt, große Audiodateien zuverlässig herunterzuladen, Netzwerkabbrüche abzufangen und Dateisystemfehler bei der Benennung proaktiv zu verhindern. Beide Skripte arbeiten vollständig mit Bordmitteln und benötigen **keine externen Module oder Abhängigkeiten**.
 
-* **PowerShell (universal\_podcast\_downloader.ps1):** Optimiert für Windows-Umgebungen.  
+* **PowerShell (universal\_podcast\_downloader.ps1):** Optimiert für Windows-Umgebungen (nutzt tiefgreifende .NET-Klassen für optimiertes Streaming).  
 * **Python (universal\_podcast\_downloader.py):** Optimiert für Linux (z. B. Fedora) und macOS.
 
-## **Funktionsumfang beider Versionen**
+## **Kernfunktionen**
 
-* **Inkrementelle Synchronisation:** Die Skripte gleichen den Feed mit dem lokalen Zielverzeichnis ab und laden ausschließlich fehlende Episoden herunter.  
-* **Ausfallsicherheit & Retry-Logik:** Um Verbindungsabbrüchen oder Server-Timeouts (insbesondere bei großen Sonderfolgen) vorzubeugen, ist ein 60-Sekunden-Timeout integriert. Bei Fehlern greift eine automatische Wiederholungsschleife (bis zu 3 Versuche).  
-* **Transaktionssichere Downloads:** Während des Ladevorgangs werden temporäre .part-Dateien genutzt. Dies verhindert, dass unvollständige Downloads bei einem Netzwerkabbruch als fertige MP3-Dateien erkannt werden.  
-* **Intelligente Nummerierung:** Die Folgennummer wird bevorzugt aus \<itunes:episode\>-Tags extrahiert. Sollten diese fehlen, nutzen die Skripte das Veröffentlichungsdatum (pubDate bzw. updated) als Sortierkriterium.  
-* **Robustes XML-Parsing:** Die Datenextraktion erfolgt über Namespace-unabhängige XPath-Abfragen. Dadurch werden sowohl klassische RSS-Feeds als auch moderne Atom-Feeds fehlerfrei verarbeitet.  
-* **Dateisystem-Sicherheit:** Ungültige Sonderzeichen und für Windows reservierte Dateinamen (wie CON, PRN, AUX) werden betriebssystemübergreifend bereinigt. Zudem wird die Länge der Dateinamen auf 150 Zeichen begrenzt, um Limitierungen des Dateisystems (z. B. MAX\_PATH) zu umgehen.
+* **Echtes Download-Resume:** Bricht die Netzwerkverbindung ab, fangen die Skripte dank Range-Headern nicht von vorne an, sondern setzen den Download bytegenau an der Abbruchstelle fort.  
+* **Speicherschonendes Chunking:** Dateien werden in 1-MB-Blöcken verarbeitet. Der Arbeitsspeicher (RAM) läuft auch bei riesigen Sonderfolgen nicht über.  
+* **Fortschrittsanzeige & Logging:** Live-Fortschrittsbalken im Terminal sowie strukturierte Status- und Fehlermeldungen mit Zeitstempel.  
+* **Retry-Logik mit Exponentiellem Backoff:** Bei Timeouts probieren die Skripte es automatisch erneut und verdoppeln dabei schonend die Wartezeit (2s, 4s, 8s...).  
+* **Dynamische Meta-Auswertung:** Intelligentes Auslesen von \<itunes:episode\> für die Nummerierung oder Fallback auf das Veröffentlichungsdatum. Die Dateiendung (.mp3, .m4a, etc.) wird dynamisch aus der URL abgeleitet.  
+* **Absolute Dateisystem-Sicherheit:** Bereinigung von Sonderzeichen, Begrenzung auf 150 Zeichen (Schutz vor MAX\_PATH-Fehlern) und Abfangen von reservierten Windows-Systemnamen (wie CON oder PRN).
 
-## **Systemvoraussetzungen**
+## **Konfiguration**
 
-### **Für Windows (PowerShell-Version)**
+Sie können die Standardwerte (Default-Werte) für Ihre Lieblings-Podcasts direkt im oberen Bereich der Skripte (BENUTZER-EINSTELLUNGEN) anpassen. Wenn Sie die Skripte dann ohne weitere Parameter starten, werden diese Standardwerte verwendet.
 
-* Windows Betriebssystem mit Windows PowerShell 5.1 oder neuer (auch kompatibel mit PowerShell Core).  
-* Ggf. muss die Ausführung von Skripten auf dem System einmalig gestattet werden:  
-  Set-ExecutionPolicy \-Scope CurrentUser \-ExecutionPolicy RemoteSigned
+Alternativ lassen sich die Skripte für maximale Flexibilität über **Kommandozeilenparameter (CLI)** steuern.
 
-### **Für Linux / macOS (Python-Version)**
+## **🐍 Nutzung der Python-Variante (Linux / macOS)**
 
-* Python 3.x (auf den meisten unixoiden Systemen wie Fedora oder Ubuntu bereits vorinstalliert).  
-* Es werden ausschließlich Standardbibliotheken verwendet.
+**Voraussetzung:** Python 3.x (Standard auf den meisten unixoiden Systemen).
 
-## **Einrichtung und Verwendung**
+### **CLI-Parameter (Python)**
 
-1. Laden Sie das für Ihr System passende Skript herunter.  
-2. Öffnen Sie das Skript in einem Texteditor Ihrer Wahl und passen Sie die Konfiguration im oberen Bereich an:  
-   * **Feed-URL:** Fügen Sie die URL des gewünschten Podcast-Feeds ein ($rssUrl bzw. rss\_url).  
-   * **Zielverzeichnis:** Geben Sie den absoluten Pfad zu Ihrem lokalen Archiv an ($downloadFolder bzw. download\_folder).  
-3. Führen Sie das Skript aus:  
-   **Unter Windows (PowerShell):**  
-   Rechtsklick auf die Datei \-\> "Mit PowerShell ausführen" oder im Terminal:  
-   .\\universal\_podcast\_downloader.ps1
+| Parameter | Kurz | Beschreibung | Standardwert (Default) |
+| :---- | :---- | :---- | :---- |
+| \--url | \-u | Die URL des RSS/Atom-Feeds. | *siehe Skript-Header* |
+| \--output | \-o | Absoluter Pfad zum Zielverzeichnis. | \~/Podcasts/MeinPodcast |
+| \--limit | \-l | Lädt nur die neuesten N Episoden (0 \= alle). | 0 |
+| \--retries |  | Maximale Anzahl der Fehler-Wiederholungen. | 3 |
+| \--help | \-h | Zeigt die integrierte Hilfeseite an. | \- |
 
-   **Unter Linux / macOS (Python):**  
-   Führen Sie das Skript im Terminal aus:  
-   python3 universal\_podcast\_downloader.py
+**Beispiele:**
 
-## **Lizenz**
+\# Standard-Download mit den Werten aus dem Skript-Header  
+python3 universal\_podcast\_downloader.py
 
-Dieses Projekt ist Open Source. Die Modifikation, Nutzung und Weiterverbreitung für private Zwecke ist uneingeschränkt gestattet.
+\# Nur die neuesten 5 Folgen eines spezifischen Feeds laden  
+python3 universal\_podcast\_downloader.py \-u "\[https://beispiel.de/feed.rss\](https://beispiel.de/feed.rss)" \-l 5
+
+\# Download in ein anderes Verzeichnis mit 5 Wiederholungsversuchen  
+python3 universal\_podcast\_downloader.py \-o "/home/nutzer/Archiv" \--retries 5
+
+## **🪟 Nutzung der PowerShell-Variante (Windows)**
+
+**Voraussetzung:** Windows PowerShell 5.1 oder neuer (auch PowerShell Core 7+ kompatibel).
+
+*Hinweis: Möglicherweise müssen Sie die Skriptausführung einmalig erlauben (Set-ExecutionPolicy \-Scope CurrentUser \-ExecutionPolicy RemoteSigned).*
+
+### **CLI-Parameter (PowerShell)**
+
+| Parameter | Beschreibung | Standardwert (Default) |
+| :---- | :---- | :---- |
+| \-Url | Die URL des RSS/Atom-Feeds. | *siehe Skript-Header* |
+| \-Output | Absoluter Pfad zum Zielverzeichnis. | $HOME\\Podcasts\\MeinPodcast |
+| \-Limit | Lädt nur die neuesten N Episoden (0 \= alle). | 0 |
+| \-Retries | Maximale Anzahl der Fehler-Wiederholungen. | 3 |
+
+**Beispiele:**
+
+\# Standard-Download per Konsole  
+.\\universal\_podcast\_downloader.ps1
+
+\# Spezifischen Podcast in ein neues Laufwerk laden  
+.\\universal\_podcast\_downloader.ps1 \-Url "\[https://beispiel.de/feed.rss\](https://beispiel.de/feed.rss)" \-Output "D:\\Podcast-Archiv"
+
+\# Nur die neueste Folge abrufen (Limit 1\)  
+.\\universal\_podcast\_downloader.ps1 \-Limit 1
+
+## **Lizenz und Datenschutz**
+
+Dieses Projekt ist Open Source. Die Modifikation, Nutzung und Weiterverbreitung für private Zwecke ist uneingeschränkt gestattet. Die Skripte arbeiten datenschutzfreundlich, enthalten keinerlei Telemetrie und übermitteln nur einen generischen Browser-User-Agent, um grundlegende CDN-Blockaden zu umgehen.
