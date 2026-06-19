@@ -3,38 +3,50 @@
 .SYNOPSIS
     Universal Podcast Downloader (PowerShell Version)
 .DESCRIPTION
-    Ein robuster Podcast-Downloader für RSS & Atom Feeds mit Resume-Funktion,
-    Fortschrittsanzeige und Fehler-Toleranz. Ohne externe Abhängigkeiten.
+    Ein plattformübergreifendes, robustes Skript zur automatisierten Archivierung
+    von Podcasts. Unterstützt RSS/Atom-Feeds, OPML-Import, Multithreading (ab PS7), 
+    Resume-Funktionalität bei Verbindungsabbrüchen und M3U-Playlisten.
 #>
 
 # ==============================================================================
 # BENUTZER-EINSTELLUNGEN / CLI-PARAMETER
 # ==============================================================================
 param (
-    # Tragen Sie hier die URL des gewünschten RSS-Feeds ein:
     [string]$Url = "https://beispiel-url.de/podcast/feed.rss",
-
-    # Tragen Sie hier den Standard-Speicherort für die MP3-Dateien ein ($HOME ist Ihr Benutzerverzeichnis):
+    [string]$Config = "",
+    [string]$Opml = "",
     [string]$Output = (Join-Path -Path $HOME -ChildPath "Podcasts\MeinPodcast"),
-
-    # Maximale Anzahl der neuesten Episoden (0 = alle laden):
     [int]$Limit = 0,
-
-    # Maximale Anzahl der Download-Versuche bei Netzwerkfehlern:
     [int]$Retries = 3,
-
-    # Timeout für Netzwerkverbindungen in Sekunden:
     [int]$TimeoutSec = 60,
-
-    # Simuliert den Vorgang, ohne Dateien tatsächlich herunterzuladen:
-    [switch]$DryRun
+    [int]$Workers = 1,
+    [switch]$DryRun,
+    [switch]$M3u
 )
 
-# Generischer User-Agent gegen CDN-Blockaden und für Datenschutz
-$UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+# 1 MB Blöcke (Chunking) verhindern RAM-Überlastung
+$global:CHUNK_SIZE = 1MB  
+# Schutzmaßnahme: Ignoriert Dateien, die größer als 1 GB sind
+$global:MAX_FILE_SIZE = 1GB  
 
-# Reservierte Windows-Namen auf Skript-Ebene abfangen (verhindert Beeinflussung anderer Skripte)
+# Globales Event für den kontrollierten Abbruch (Strg+C)
+$global:AbortEvent = $false
+
+# Registrierung eines .NET-Events, um Strg+C (KeyboardInterrupt) sauber abzufangen
+try {
+    [System.Console]::add_CancelKeyPress({
+        $Event.SourceEventArgs.Cancel = $true
+        $global:AbortEvent = $true
+        Write-Host "`n[WARNUNG] Abbruch durch Benutzer. Stoppe Warteschlange und aktive Downloads..." -ForegroundColor Yellow
+    })
+} catch {
+    # Fallback, falls die Konsole das Event nicht unterstützt (z.B. in manchen IDEs)
+}
+
+# Reservierte Windows-Namen auf Skript-Ebene abfangen
 $script:ReservedNames = @("CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9")
+
+$global:UserAgent = "UniversalPodcastDownloader/1.0 (PowerShell; +https://github.com/lehrer-gym-ns)"
 
 # ------------------------------------------------------------------------------
 # HILFSFUNKTIONEN
@@ -61,27 +73,39 @@ function Get-SafeFileName {
     return $safeTitle.Trim()
 }
 
+function Invoke-CleanupOldParts {
+    param([string]$Folder, [int]$DaysOld = 7)
+    $cutoffDate = (Get-Date).AddDays(-$DaysOld)
+    $oldParts = Get-ChildItem -Path $Folder -Filter "*.part" | Where-Object { $_.LastWriteTime -lt $cutoffDate }
+    
+    if ($oldParts) {
+        $oldParts | Remove-Item -Force
+        Write-Log "Bereinigung: $($oldParts.Count) veraltete .part-Datei(en) gelöscht." -Level "INFO"
+    }
+}
+
 function Invoke-RobustDownload {
     param(
         [string]$DownloadUrl,
         [string]$FinalPath,
         [string]$PartPath,
         [int]$MaxRetries,
-        [int]$TimeoutSec
+        [int]$TimeoutSec,
+        [int]$ProgressId = 1 # Eindeutige ID für parallele Fortschrittsbalken
     )
 
     for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
+        if ($global:AbortEvent) { return $false }
         $progressStarted = $false
+
         try {
-            # Direkter Zugriff auf .NET HttpWebRequest für Chunking und Range-Headers
             $request = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($DownloadUrl)
-            $request.UserAgent = $UserAgent
-            $request.Timeout = $TimeoutSec * 1000 # Umrechnung in Millisekunden
+            $request.UserAgent = $global:UserAgent
+            $request.Timeout = $TimeoutSec * 1000 
 
             $initialSize = 0
             $appendMode = $false
 
-            # Resume-Logik prüfen
             if (Test-Path -Path $PartPath) {
                 $initialSize = (Get-Item -Path $PartPath).Length
                 if ($initialSize -gt 0) {
@@ -91,74 +115,99 @@ function Invoke-RobustDownload {
             }
 
             $response = $request.GetResponse()
-            
-            # ContentLength-Bug Fix: -1 abfangen
             $totalSize = if ($response.ContentLength -ge 0) { $response.ContentLength + $initialSize } else { 0 }
             
-            # Prüfen, ob der Server Resume (206 Partial Content) unterstützt
+            if ($totalSize -gt $global:MAX_FILE_SIZE) {
+                Write-Log "Datei überschreitet 1GB-Limit, überspringe: $(Split-Path $FinalPath -Leaf)" -Level "WARN"
+                return $false
+            }
+
             $isPartial = ($response.StatusCode -eq [System.Net.HttpStatusCode]::PartialContent)
             
             if ($initialSize -gt 0 -and -not $isPartial) {
-                Write-Log "Server unterstützt kein Resume. Starte Download neu." -Level "INFO"
                 $initialSize = 0
                 $appendMode = $false
-            } elseif ($initialSize -gt 0 -and $isPartial) {
-                $mb = [math]::Round($initialSize / 1MB, 1)
-                Write-Log "Setze abgebrochenen Download fort (ab $mb MB)." -Level "INFO"
             }
 
-            # FileStream vorbereiten
             $fileMode = if ($appendMode -and $isPartial) { [System.IO.FileMode]::Append } else { [System.IO.FileMode]::Create }
             $fileStream = New-Object System.IO.FileStream($PartPath, $fileMode, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
             $responseStream = $response.GetResponseStream()
 
-            $buffer = New-Object byte[] (1024 * 1024) # 1 MB Puffer
+            $buffer = New-Object byte[] $global:CHUNK_SIZE
             $downloaded = $initialSize
             $progressStarted = $true
+            
+            $startTime = [datetime]::Now
 
             try {
                 while (($read = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    if ($global:AbortEvent) { throw "Abbruch durch Benutzer (Event)" }
+                    
                     $fileStream.Write($buffer, 0, $read)
                     $downloaded += $read
 
-                    # PowerShell Fortschrittsbalken (inklusive Handhabung unbekannter Größen)
+                    # PowerShell generiert native, parallele Balken über eindeutige IDs
+                    $elapsed = ([datetime]::Now - $startTime).TotalSeconds
+                    $speedMBps = if ($elapsed -gt 0) { (($downloaded - $initialSize) / 1MB) / $elapsed } else { 0 }
+                    
                     if ($totalSize -gt 0) {
                         $pct = ($downloaded / $totalSize) * 100
-                        $statusText = "{0:N1} MB / {1:N1} MB" -f ($downloaded / 1MB), ($totalSize / 1MB)
-                        Write-Progress -Activity "Lade herunter: $(Split-Path $FinalPath -Leaf)" -Status $statusText -PercentComplete $pct
+                        $statusText = "{0:N1} MB / {1:N1} MB | {2:N1} MB/s" -f ($downloaded / 1MB), ($totalSize / 1MB), $speedMBps
+                        Write-Progress -Id $ProgressId -Activity "Lade: $(Split-Path $FinalPath -Leaf)" -Status $statusText -PercentComplete $pct
                     } else {
-                        $statusText = "{0:N1} MB geladen (Gesamtgröße unbekannt)" -f ($downloaded / 1MB)
-                        Write-Progress -Activity "Lade herunter: $(Split-Path $FinalPath -Leaf)" -Status $statusText
+                        $statusText = "{0:N1} MB geladen | {1:N1} MB/s" -f ($downloaded / 1MB), $speedMBps
+                        Write-Progress -Id $ProgressId -Activity "Lade: $(Split-Path $FinalPath -Leaf)" -Status $statusText
                     }
                 }
             } finally {
                 if ($fileStream) { $fileStream.Close() }
                 if ($responseStream) { $responseStream.Close() }
                 if ($response) { $response.Close() }
-                if ($progressStarted) { Write-Progress -Activity "Lade herunter: $(Split-Path $FinalPath -Leaf)" -Completed }
+                if ($progressStarted) { Write-Progress -Id $ProgressId -Activity "Lade: $(Split-Path $FinalPath -Leaf)" -Completed }
             }
 
-            # Größenprüfung am Ende (nur wenn Gesamtgröße vom Server mitgeteilt wurde)
             if ($totalSize -gt 0 -and $downloaded -lt $totalSize) {
                 throw "Download unvollständig (Verbindung abgerissen)."
             }
 
             Move-Item -Path $PartPath -Destination $FinalPath -Force
-            Write-Log "Download erfolgreich abgeschlossen." -Level "SUCCESS"
-            return # Erfolg! Schleife verlassen.
+            return $true
 
         } catch {
-            if ($progressStarted) { Write-Progress -Activity "Lade herunter: $(Split-Path $FinalPath -Leaf)" -Completed }
+            if ($progressStarted) { Write-Progress -Id $ProgressId -Activity "Lade: $(Split-Path $FinalPath -Leaf)" -Completed }
+            if ($global:AbortEvent) { return $false }
+
             $errMsg = $_.Exception.Message
-            
             if ($attempt -lt $MaxRetries) {
-                $sleepTime = [math]::Pow(2, $attempt) # Exponentielles Backoff: 2, 4, 8...
+                $sleepTime = [math]::Pow(2, $attempt)
                 Write-Log "Fehler bei Versuch $attempt/$MaxRetries: $errMsg. Warte ${sleepTime}s..." -Level "WARN"
-                Start-Sleep -Seconds $sleepTime
+                
+                # Sleep in Schritten, um auf ABORT_EVENT reagieren zu können
+                for ($i = 0; $i -lt ($sleepTime * 10); $i++) {
+                    if ($global:AbortEvent) { return $false }
+                    Start-Sleep -Milliseconds 100
+                }
             } else {
-                Write-Log "Endgültig fehlgeschlagen nach $MaxRetries Versuchen: $errMsg" -Level "ERROR"
+                Write-Log "Fehlgeschlagen nach $MaxRetries Versuchen: $(Split-Path $FinalPath -Leaf)" -Level "ERROR"
+                if (Test-Path $PartPath) { Remove-Item $PartPath -Force }
             }
         }
+    }
+    return $false
+}
+
+function New-M3uPlaylist {
+    param([string]$Folder, [string]$Title)
+    $mp3Files = Get-ChildItem -Path $Folder -Filter "*.mp3" | Sort-Object Name
+    if (-not $mp3Files) { return }
+
+    try {
+        $playlistPath = Join-Path -Path $Folder -ChildPath "$(Get-SafeFileName -Title $Title)_Playlist.m3u"
+        $content = @("#EXTM3U") + ($mp3Files.Name)
+        $content | Out-File -FilePath $playlistPath -Encoding UTF8
+        Write-Log "M3U-Playlist generiert: $(Split-Path $playlistPath -Leaf)" -Level "INFO"
+    } catch {
+        Write-Log "Konnte M3U nicht erstellen: $_" -Level "ERROR"
     }
 }
 
@@ -166,102 +215,166 @@ function Invoke-RobustDownload {
 # HAUPTSKRIPT (MAIN)
 # ------------------------------------------------------------------------------
 
-# 1. Zielverzeichnis sichern
-if (-not $DryRun -and -not (Test-Path -Path $Output)) {
-    New-Item -ItemType Directory -Path $Output | Out-Null
-    Write-Log "Verzeichnis erstellt: $Output" -Level "SUCCESS"
-}
+# 1. Konfiguration einlesen (CLI -> JSON -> OPML -> Defaults)
+$feedUrls = @()
 
-Write-Log "Analysiere Feed: $Url"
-
-# TLS anpassen für ältere PowerShell-Versionen (Vermeidung magischer Nummern)
-if ($PSVersionTable.PSEdition -eq "Desktop") {
+if (-not [string]::IsNullOrWhiteSpace($Config) -and (Test-Path $Config)) {
     try {
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+        $cfg = Get-Content $Config -Raw | ConvertFrom-Json
+        if ($cfg.url) { $feedUrls += $cfg.url }
+        if ($cfg.urls) { $feedUrls += $cfg.urls }
+        if ($cfg.output -and $Output -eq (Join-Path $HOME "Podcasts\MeinPodcast")) { $Output = $cfg.output }
+    } catch { Write-Log "Fehler beim Lesen der config.json: $_" -Level "ERROR" }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($Opml) -and (Test-Path $Opml)) {
+    try {
+        [xml]$opmlXml = Get-Content $Opml
+        $feedUrls += @($opmlXml.SelectNodes("//outline[@xmlUrl]") | ForEach-Object { $_.xmlUrl })
+    } catch { Write-Log "Fehler beim Parsen der OPML-Datei: $_" -Level "ERROR" }
+}
+
+if (-not [string]::IsNullOrWhiteSpace($Url) -and $Url -ne "https://beispiel-url.de/podcast/feed.rss") {
+    $feedUrls += $Url
+}
+
+if ($feedUrls.Count -eq 0) { $feedUrls += "https://beispiel-url.de/podcast/feed.rss" }
+
+# Dubletten entfernen
+$feedUrls = $feedUrls | Select-Object -Unique
+
+# 2. Verzeichnis vorbereiten
+if (-not $DryRun) {
+    if (-not (Test-Path -Path $Output)) {
+        New-Item -ItemType Directory -Path $Output | Out-Null
+        Write-Log "Verzeichnis erstellt: $Output" -Level "SUCCESS"
+    }
+    Invoke-CleanupOldParts -Folder $Output
+}
+
+# TLS anpassen
+if ($PSVersionTable.PSEdition -eq "Desktop") {
+    try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13 }
+    catch { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 }
+}
+
+$totalDownloaded = 0
+$totalSkipped = 0
+$totalFailed = 0
+
+# 3. Feeds abarbeiten
+foreach ($feedUrl in $feedUrls) {
+    if ($global:AbortEvent) { break }
+    Write-Log "Analysiere Feed: $feedUrl"
+
+    try {
+        $feedRequest = Invoke-WebRequest -Uri $feedUrl -UserAgent $global:UserAgent -UseBasicParsing -TimeoutSec 30
+        [xml]$feed = $feedRequest.Content
     } catch {
-        # Fallback, falls .NET-Version kein Tls13 Enum kennt
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    }
-}
-
-try {
-    $feedRequest = Invoke-WebRequest -Uri $Url -UserAgent $UserAgent -UseBasicParsing -TimeoutSec 30
-    [xml]$feed = $feedRequest.Content
-} catch {
-    Write-Log "Fehler beim Abruf oder Parsing des Feeds. Details: $_" -Level "ERROR"
-    exit 1
-}
-
-# 2. Episoden namespace-unabhängig auslesen (RSS + Atom)
-$items = $feed.SelectNodes("//*[local-name()='item' or local-name()='entry']")
-
-if (-not $items -or $items.Count -eq 0) {
-    Write-Log "Keine Episoden im XML gefunden." -Level "ERROR"
-    exit 1
-}
-
-# Limit anwenden
-if ($Limit -gt 0) {
-    $items = $items | Select-Object -First $Limit
-    Write-Log "Limit aktiv: Verarbeite nur die neuesten $Limit Episoden."
-} else {
-    Write-Log "$($items.Count) Episoden detektiert."
-}
-
-# 3. Schleife durch Episoden
-foreach ($item in $items) {
-    $titleNode = $item.SelectSingleNode("*[local-name()='title']")
-    $title = if ($titleNode) { $titleNode.InnerText.Trim() } else { "Unbekannte_Episode" }
-    
-    $mediaUrl = $null
-    $enclosure = $item.SelectSingleNode("*[local-name()='enclosure']")
-    if ($enclosure -and $enclosure.HasAttribute("url")) {
-        $mediaUrl = $enclosure.GetAttribute("url")
-    } else {
-        $linkNode = $item.SelectSingleNode("*[local-name()='link' and @rel='enclosure']")
-        if ($linkNode -and $linkNode.HasAttribute("href")) { $mediaUrl = $linkNode.GetAttribute("href") }
+        Write-Log "Überspringe Feed wegen Fehler: $_" -Level "ERROR"
+        continue
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($mediaUrl)) {
+    $items = $feed.SelectNodes("//*[local-name()='item' or local-name()='entry']")
+    if (-not $items -or $items.Count -eq 0) { continue }
+
+    if ($Limit -gt 0) { $items = $items | Select-Object -First $Limit }
+
+    # Array für die anstehenden Download-Aufgaben
+    $tasks = @()
+
+    foreach ($item in $items) {
+        $titleNode = $item.SelectSingleNode("*[local-name()='title']")
+        $title = if ($titleNode) { $titleNode.InnerText.Trim() } else { "Unbekannte_Episode" }
         
-        $safeTitle = Get-SafeFileName -Title $title
-        
-        # Präfix ermitteln (Nummer oder Datum)
-        $prefix = ""
-        $epNode = $item.SelectSingleNode("*[local-name()='episode']")
-        if ($epNode -and $epNode.InnerText -match "^\d+$") {
-            $prefix = "{0:D3} - " -f [int]($epNode.InnerText.Trim())
-        } else {
-            $pubDateNode = $item.SelectSingleNode("*[local-name()='pubDate' or local-name()='published' or local-name()='updated']")
-            if ($pubDateNode) { 
-                try { 
-                    $prefix = ([datetime]$pubDateNode.InnerText).ToString("yyyy-MM-dd") + " - " 
-                } catch {
-                    Write-Log "Datumsformat unbekannt für '$title'" -Level "WARN"
-                } 
-            }
+        $mediaUrl = $null
+        $enclosure = $item.SelectSingleNode("*[local-name()='enclosure']")
+        if ($enclosure -and $enclosure.HasAttribute("url")) { $mediaUrl = $enclosure.GetAttribute("url") }
+        else {
+            $linkNode = $item.SelectSingleNode("*[local-name()='link' and @rel='enclosure']")
+            if ($linkNode -and $linkNode.HasAttribute("href")) { $mediaUrl = $linkNode.GetAttribute("href") }
         }
-        
-        # Dynamische Dateiendung
-        $urlWithoutQuery = $mediaUrl.Split('?')[0]
-        $extension = [System.IO.Path]::GetExtension($urlWithoutQuery)
-        if ([string]::IsNullOrWhiteSpace($extension)) { $extension = ".mp3" }
 
-        $fileName = "$prefix$safeTitle$extension"
-        $filePath = Join-Path -Path $Output -ChildPath $fileName
-        $partPath = "$filePath.part"
+        if (-not [string]::IsNullOrWhiteSpace($mediaUrl)) {
+            $safeTitle = Get-SafeFileName -Title $title
+            
+            $prefix = ""
+            $epNode = $item.SelectSingleNode("*[local-name()='episode']")
+            if ($epNode -and $epNode.InnerText -match "^\d+$") { $prefix = "{0:D3} - " -f [int]($epNode.InnerText.Trim()) }
+            else {
+                $pubDateNode = $item.SelectSingleNode("*[local-name()='pubDate' or local-name()='published' or local-name()='updated']")
+                if ($pubDateNode) { try { $prefix = ([datetime]$pubDateNode.InnerText).ToString("yyyy-MM-dd") + " - " } catch {} }
+            }
+            
+            $urlWithoutQuery = $mediaUrl.Split('?')[0]
+            $extension = [System.IO.Path]::GetExtension($urlWithoutQuery)
+            if ([string]::IsNullOrWhiteSpace($extension)) { $extension = ".mp3" }
 
-        if (Test-Path -Path $filePath) {
-            Write-Log "Überspringe (bereits vorhanden): $fileName"
-        } else {
-            if ($DryRun) {
-                Write-Log "DRY-RUN: Würde Datei herunterladen: $fileName" -Level "INFO"
+            $fileName = "$prefix$safeTitle$extension"
+            $filePath = Join-Path -Path $Output -ChildPath $fileName
+            $partPath = "$filePath.part"
+
+            if (Test-Path -Path $filePath) {
+                Write-Log "Überspringe: $fileName" -Level "INFO" # -ForegroundColor DarkGray
+                $totalSkipped++
             } else {
-                Write-Log "Starte Download: $fileName"
-                Invoke-RobustDownload -DownloadUrl $mediaUrl -FinalPath $filePath -PartPath $partPath -MaxRetries $Retries -TimeoutSec $TimeoutSec
+                $tasks += [PSCustomObject]@{ Url = $mediaUrl; Final = $filePath; Part = $partPath; Name = $fileName }
             }
         }
     }
+
+    if ($DryRun) {
+        foreach ($t in $tasks) { Write-Log "DRY-RUN: Würde laden: $($t.Name)" -Level "INFO" }
+        continue
+    }
+
+    if ($tasks.Count -gt 0) {
+        Write-Log "Starte Download von $($tasks.Count) Episoden (Workers: $Workers)..."
+
+        # MULTITHREADING-LOGIK: Feature-Detection für PowerShell 7+
+        if ($Workers -gt 1 -and $PSVersionTable.PSVersion.Major -ge 7) {
+            # Modernes PowerShell Multithreading
+            $results = $tasks | ForEach-Object -Parallel {
+                $task = $_
+                $workerId = [System.Threading.Thread]::CurrentThread.ManagedThreadId
+                
+                $success = Invoke-RobustDownload -DownloadUrl $task.Url -FinalPath $task.Final -PartPath $task.Part -MaxRetries $using:Retries -TimeoutSec $using:TimeoutSec -ProgressId $workerId
+                
+                if ($success) { Write-Log "✔ Abgeschlossen: $($task.Name)" -Level "SUCCESS" }
+                [PSCustomObject]@{ Success = $success }
+            } -ThrottleLimit $Workers
+
+            $totalDownloaded += ($results | Where-Object Success -eq $true).Count
+            $totalFailed += ($results | Where-Object Success -eq $false).Count
+        } 
+        else {
+            # Fallback für PowerShell 5.1 (Windows Standard)
+            if ($Workers -gt 1) { Write-Log "Multithreading erfordert PowerShell 7+. Führe Downloads sequenziell aus." -Level "WARN" }
+            
+            foreach ($task in $tasks) {
+                if ($global:AbortEvent) { break }
+                $success = Invoke-RobustDownload -DownloadUrl $task.Url -FinalPath $task.Final -PartPath $task.Part -MaxRetries $Retries -TimeoutSec $TimeoutSec -ProgressId 1
+                
+                if ($success) { 
+                    Write-Log "✔ Abgeschlossen: $($task.Name)" -Level "SUCCESS"
+                    $totalDownloaded++ 
+                } else { 
+                    if (-not $global:AbortEvent) { $totalFailed++ }
+                }
+            }
+        }
+    }
+
+    if ($M3u -and -not $DryRun -and -not $global:AbortEvent) {
+        New-M3uPlaylist -Folder $Output -Title "Podcast"
+    }
 }
 
-Write-Log "Synchronisation erfolgreich abgeschlossen." -Level "SUCCESS"
+if (-not $global:AbortEvent) {
+    Write-Log "=================================================="
+    Write-Log "SYNCHRONISATION ABGESCHLOSSEN"
+    Write-Log "✅ Heruntergeladen: $totalDownloaded"
+    Write-Log "⏭️ Übersprungen:   $totalSkipped"
+    if ($totalFailed -gt 0) { Write-Log "❌ Fehlgeschlagen:  $totalFailed" -Level "WARN" }
+    Write-Log "=================================================="
+}
