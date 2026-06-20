@@ -61,9 +61,7 @@ python3 universal\_podcast\_downloader.py \--dry-run
 
 ## **🪟 Nutzung der PowerShell-Variante (Windows)**
 
-**Voraussetzung:** Windows PowerShell 5.1 oder neuer. Multithreading (-Workers) erfordert **PowerShell 7+**.
-
-*Hinweis: Möglicherweise müssen Sie die Skriptausführung einmalig erlauben (Set-ExecutionPolicy \-Scope CurrentUser \-ExecutionPolicy RemoteSigned).*
+**Voraussetzung:** Windows PowerShell 5.1 oder neuer. Multithreading (-Workers) erfordert **PowerShell 7+**. *Hinweis: Möglicherweise müssen Sie die Skriptausführung einmalig erlauben (Set-ExecutionPolicy \-Scope CurrentUser \-ExecutionPolicy RemoteSigned).*
 
 ### **CLI-Parameter (PowerShell)**
 
@@ -91,6 +89,8 @@ python3 universal\_podcast\_downloader.py \--dry-run
 \# Konfiguration über eine JSON-Datei steuern  
 .\\universal\_podcast\_downloader.ps1 \-Config "C:\\pfad\\zu\\meinen\_podcasts.json"
 
-## **Lizenz und Datenschutz**
+## **Entstehung, Lizenz und Datenschutz**
 
 Dieses Projekt ist Open Source. Die Modifikation, Nutzung und Weiterverbreitung ist uneingeschränkt gestattet. Die Skripte arbeiten streng datenschutzfreundlich: Sie enthalten keinerlei Telemetrie und übermitteln lediglich einen generischen Browser-User-Agent, um 403-Blockaden durch Content Delivery Networks (CDNs) zu umgehen.
+
+**Hinweis zur Entstehung:** Die Skripte und die dazugehörige Dokumentation in diesem Projekt wurden mithilfe von Künstlicher Intelligenz (KI) konzipiert, entwickelt und optimiert.
