@@ -109,15 +109,18 @@ class ProgressManager:
     def complete(self, filename: str, success: bool):
         """Entfernt eine abgeschlossene Datei aus der aktiven Anzeige und aktualisiert den Zähler."""
         with self.lock:
+            self._clear_lines() # Zuerst die aktuellen Balken ausblenden
+            
             if filename in self.active:
                 del self.active[filename]
             self.completed += 1
-            self._render()
             
             if success and not ABORT_EVENT.is_set():
-                # Erfolgsmeldung außerhalb des dynamischen Balken-Bereichs schreiben
-                sys.stdout.write(f"\033[K\033[32m✔ Abgeschlossen: {filename[:50]}...\033[0m\n")
-                self.lines_printed += 1
+                # Erfolgsmeldung permanent (wie im PowerShell-Skript) ins Log schreiben
+                t = time.strftime('%Y-%m-%d %H:%M:%S')
+                sys.stdout.write(f"{t} [\033[32mSUCCESS\033[0m] \033[32m✔ Abgeschlossen: {filename}\033[0m\n")
+            
+            self._render() # Balken unterhalb der neuen Log-Zeile wieder aufbauen
 
     def log_error(self, message: str):
         """Erlaubt das Schreiben von Fehler-Logs, ohne die Fortschrittsbalken zu zerstören."""
