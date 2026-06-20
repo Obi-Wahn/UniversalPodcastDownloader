@@ -180,7 +180,8 @@ function Invoke-RobustDownload {
             $errMsg = $_.Exception.Message
             if ($attempt -lt $MaxRetries) {
                 $sleepTime = [math]::Pow(2, $attempt)
-                Write-Log "Fehler bei Versuch $attempt/$MaxRetries: $errMsg. Warte ${sleepTime}s..." -Level "WARN"
+                # KORREKTUR: Die Variable $MaxRetries ist hier sauber mit {} gekapselt.
+                Write-Log "Fehler bei Versuch $attempt/${MaxRetries}: $errMsg. Warte ${sleepTime}s..." -Level "WARN"
                 
                 # Sleep in Schritten, um auf ABORT_EVENT reagieren zu können
                 for ($i = 0; $i -lt ($sleepTime * 10); $i++) {
