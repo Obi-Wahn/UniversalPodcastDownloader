@@ -144,6 +144,9 @@ class ProgressManager:
                 sys.stdout.write("\033[K\n") # Zeile löschen
             sys.stdout.write(f"\033[{self.lines_printed}A")
             sys.stdout.flush()
+            
+            # KORREKTUR: Zeilenzähler nach dem Löschen zurücksetzen!
+            self.lines_printed = 0
 
     def _render(self):
         """Zeichnet die mehrzeilige Fortschrittsanzeige in die Konsole."""
