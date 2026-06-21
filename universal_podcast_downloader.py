@@ -410,10 +410,15 @@ def main() -> None:
     args = parser.parse_args()
     setup_logging()
 
-    # Feed-Quellen sammeln und priorisieren (CLI Argumente -> JSON Config -> OPML -> Defaults)
+    # Konfiguration laden (Priorität: CLI -> JSON Config -> Defaults)
     feed_urls = []
-    if args.config and Path(args.config).exists():
-        with open(args.config, 'r', encoding='utf-8') as f:
+    
+    # Automatische Erkennung: Falls kein Parameter übergeben wurde, standardmäßig nach config.json suchen
+    config_file = args.config if args.config else "config.json"
+    
+    if Path(config_file).exists():
+        logging.info(f"Lade Konfiguration aus: {config_file}")
+        with open(config_file, 'r', encoding='utf-8') as f:
             cfg = json.load(f)
             if "url" in cfg: feed_urls.append(cfg["url"])
             if "urls" in cfg: feed_urls.extend(cfg["urls"])
