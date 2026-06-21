@@ -24,8 +24,8 @@ Das Projekt ist darauf ausgelegt, große Audiodateien zuverlässig herunterzulad
 
 Sie können das Zielverzeichnis und die Feed-URLs auf drei Arten definieren:
 
-1. **Kommandozeile (CLI):** Übergabe der Parameter beim Aufruf (siehe Tabellen unten).  
-2. **config.json:** Eine einfache JSON-Datei ({"url": "...", "output": "..."}).  
+1. **Automatisch (config.json):** Eine einfache JSON-Datei ({"url": "...", "output": "..."}). *Tipp:* Liegt eine Datei namens config.json im exakt selben Ordner wie das Skript, wird sie beim Start **vollautomatisch erkannt** und geladen. Es sind keine weiteren Befehlszeilenparameter nötig ("Convention over Configuration").  
+2. **Kommandozeile (CLI):** Übergabe spezifischer Parameter beim Aufruf (siehe Tabellen unten). Überschreibt bei Bedarf die automatische Konfiguration.  
 3. **OPML-Datei:** Eine von Podcatchern exportierte XML-Datei, aus der das Skript alle Feed-URLs extrahiert und nacheinander abarbeitet.
 
 ## **🐍 Nutzung der Python-Variante (Linux / macOS)**
@@ -37,7 +37,7 @@ Sie können das Zielverzeichnis und die Feed-URLs auf drei Arten definieren:
 | Parameter | Kurz | Beschreibung | Standardwert |
 | :---- | :---- | :---- | :---- |
 | \--url | \-u | Die URL des RSS/Atom-Feeds. | *Beispiel-URL* |
-| \--config | \-c | Pfad zu einer config.json. | \- |
+| \--config | \-c | Pfad zu einer abweichenden config.json. | *Auto-Erkennung* |
 | \--opml |  | Pfad zu einer OPML-Datei (für Massen-Downloads). | \- |
 | \--output | \-o | Absoluter Pfad zum Zielverzeichnis. | \~/Podcasts/MeinPodcast |
 | \--limit | \-l | Lädt nur die neuesten N Episoden (0 \= alle). | 0 |
@@ -49,6 +49,9 @@ Sie können das Zielverzeichnis und die Feed-URLs auf drei Arten definieren:
 | \--help | \-h | Zeigt die integrierte Hilfeseite an. | \- |
 
 **Beispiele:**
+
+\# Nutzt automatisch eine vorhandene config.json im selben Ordner  
+python3 universal\_podcast\_downloader.py
 
 \# Gesamtes Archiv aus einer OPML-Datei laden, 5 Downloads parallel  
 python3 universal\_podcast\_downloader.py \--opml "abos.opml" \-w 5
@@ -68,7 +71,7 @@ python3 universal\_podcast\_downloader.py \--dry-run
 | Parameter | Beschreibung | Standardwert (Default) |
 | :---- | :---- | :---- |
 | \-Url | Die URL des RSS/Atom-Feeds. | *Beispiel-URL* |
-| \-Config | Pfad zu einer config.json. | \- |
+| \-Config | Pfad zu einer abweichenden config.json. | *Auto-Erkennung* |
 | \-Opml | Pfad zu einer OPML-Datei (für Massen-Downloads). | \- |
 | \-Output | Absoluter Pfad zum Zielverzeichnis. | $HOME\\Podcasts\\MeinPodcast |
 | \-Limit | Lädt nur die neuesten N Episoden (0 \= alle). | 0 |
@@ -80,13 +83,16 @@ python3 universal\_podcast\_downloader.py \--dry-run
 
 **Beispiele:**
 
+\# Nutzt automatisch eine vorhandene config.json im selben Ordner  
+.\\universal\_podcast\_downloader.ps1
+
 \# Standard-Download mit 3 parallelen Threads (PS 7+)  
 .\\universal\_podcast\_downloader.ps1 \-Workers 3
 
 \# Spezifischen Podcast in ein neues Laufwerk laden und Playlist generieren  
 .\\universal\_podcast\_downloader.ps1 \-Url "\[https://beispiel.de/feed.rss\](https://beispiel.de/feed.rss)" \-Output "D:\\Podcast-Archiv" \-M3u
 
-\# Konfiguration über eine JSON-Datei steuern  
+\# Konfiguration über eine abweichende JSON-Datei steuern  
 .\\universal\_podcast\_downloader.ps1 \-Config "C:\\pfad\\zu\\meinen\_podcasts.json"
 
 ## **Entstehung, Lizenz und Datenschutz**
