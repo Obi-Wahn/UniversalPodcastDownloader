@@ -1,0 +1,13 @@
+{
+  "output": "./Podcast-Archiv",
+  "urls": [
+    "https://beispiel-url.de/mein-lieblingspodcast/feed.xml",
+    "https://www1.wdr.de/radio/wdr5/podcast/zeitzeichen/wdr5-zeitzeichen-104.podcast"
+  ],
+  "limit": 0,
+  "workers": 3,
+  "retries": 3,
+  "timeout": 60,
+  "m3u": true,
+  "dry_run": false
+}
