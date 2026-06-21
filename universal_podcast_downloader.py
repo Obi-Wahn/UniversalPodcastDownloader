@@ -425,6 +425,14 @@ def main() -> None:
             # Output-Verzeichnis aus Config nutzen, falls kein abweichender CLI-Parameter übergeben wurde
             if "output" in cfg and args.output == DEFAULT_DOWNLOAD_FOLDER: args.output = cfg["output"]
             
+            # Neue Parameter auswerten (überschreiben Defaults, aber keine aktiven CLI-Eingaben)
+            if "limit" in cfg and args.limit == DEFAULT_LIMIT: args.limit = cfg["limit"]
+            if "workers" in cfg and args.workers == DEFAULT_WORKERS: args.workers = cfg["workers"]
+            if "retries" in cfg and args.retries == 3: args.retries = cfg["retries"]
+            if "timeout" in cfg and args.timeout == DEFAULT_TIMEOUT: args.timeout = cfg["timeout"]
+            if "m3u" in cfg and not args.m3u: args.m3u = cfg["m3u"]
+            if "dry_run" in cfg and not args.dry_run: args.dry_run = cfg["dry_run"]
+            
     if args.opml:
         feed_urls.extend(parse_opml(args.opml))
         
