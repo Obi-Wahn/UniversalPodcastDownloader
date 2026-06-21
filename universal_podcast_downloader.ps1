@@ -230,6 +230,14 @@ if (-not [string]::IsNullOrWhiteSpace($Config) -and (Test-Path $Config)) {
         if ($cfg.url) { $feedUrls += $cfg.url }
         if ($cfg.urls) { $feedUrls += $cfg.urls }
         if ($cfg.output -and $Output -eq (Join-Path $HOME "Podcasts\MeinPodcast")) { $Output = $cfg.output }
+        
+        # Neue Parameter auswerten (überschreiben Defaults, aber keine aktiven CLI-Eingaben)
+        if ($null -ne $cfg.limit -and $Limit -eq 0) { $Limit = [int]$cfg.limit }
+        if ($null -ne $cfg.workers -and $Workers -eq 1) { $Workers = [int]$cfg.workers }
+        if ($null -ne $cfg.retries -and $Retries -eq 3) { $Retries = [int]$cfg.retries }
+        if ($null -ne $cfg.timeout -and $TimeoutSec -eq 60) { $TimeoutSec = [int]$cfg.timeout }
+        if ($null -ne $cfg.m3u -and -not $M3u) { $M3u = [bool]$cfg.m3u }
+        if ($null -ne $cfg.dry_run -and -not $DryRun) { $DryRun = [bool]$cfg.dry_run }
     } catch { Write-Log "Fehler beim Lesen der config.json: $_" -Level "ERROR" }
 }
 
