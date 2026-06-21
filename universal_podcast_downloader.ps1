@@ -180,7 +180,6 @@ function Invoke-RobustDownload {
             $errMsg = $_.Exception.Message
             if ($attempt -lt $MaxRetries) {
                 $sleepTime = [math]::Pow(2, $attempt)
-                # KORREKTUR: Die Variable $MaxRetries ist hier sauber mit {} gekapselt.
                 Write-Log "Fehler bei Versuch $attempt/${MaxRetries}: $errMsg. Warte ${sleepTime}s..." -Level "WARN"
                 
                 # Sleep in Schritten, um auf ABORT_EVENT reagieren zu können
@@ -219,7 +218,13 @@ function New-M3uPlaylist {
 # 1. Konfiguration einlesen (CLI -> JSON -> OPML -> Defaults)
 $feedUrls = @()
 
+# Automatische Erkennung: Falls kein Parameter übergeben wurde, standardmäßig nach config.json suchen
+if ([string]::IsNullOrWhiteSpace($Config) -and (Test-Path "config.json")) {
+    $Config = "config.json"
+}
+
 if (-not [string]::IsNullOrWhiteSpace($Config) -and (Test-Path $Config)) {
+    Write-Log "Lade Konfiguration aus: $Config" -Level "INFO"
     try {
         $cfg = Get-Content $Config -Raw | ConvertFrom-Json
         if ($cfg.url) { $feedUrls += $cfg.url }
