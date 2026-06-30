@@ -97,6 +97,6 @@ python3 universal\_podcast\_downloader.py \--dry-run
 
 ## **Entstehung, Lizenz und Datenschutz**
 
-Dieses Projekt ist Open Source. Die Modifikation, Nutzung und Weiterverbreitung ist uneingeschränkt gestattet. Die Skripte arbeiten streng datenschutzfreundlich: Sie enthalten keinerlei Telemetrie und übermitteln lediglich einen generischen Browser-User-Agent, um 403-Blockaden durch Content Delivery Networks (CDNs) zu umgehen.
+Dieses Projekt ist Open Source und steht unter der [MIT-Lizenz](https://opensource.org/license/mit). Die Skripte arbeiten streng datenschutzfreundlich: Sie enthalten keinerlei Telemetrie und übermitteln lediglich einen generischen Browser-User-Agent, um 403-Blockaden durch Content Delivery Networks (CDNs) zu umgehen.
 
 **Hinweis zur Entstehung:** Die Skripte und die dazugehörige Dokumentation in diesem Projekt wurden mithilfe von Künstlicher Intelligenz (KI) konzipiert, entwickelt und optimiert.
