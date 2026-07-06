@@ -34,7 +34,7 @@ $global:SharedState = [hashtable]::Synchronized(@{
     AbortEvent = $false
     ChunkSize = 1MB
     MaxFileSize = 1GB
-    UserAgent = "UniversalPodcastDownloader/1.0 (PowerShell; +https://github.com/lehrer-gym-ns)"
+    UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 })
 
 # Registrierung eines .NET-Events, um Strg+C (KeyboardInterrupt) sauber abzufangen
