@@ -24,29 +24,32 @@ param (
     [switch]$M3u
 )
 
-# 1 MB Blöcke (Chunking) verhindern RAM-Überlastung
-$global:CHUNK_SIZE = 1MB  
-# Schutzmaßnahme: Ignoriert Dateien, die größer als 1 GB sind
-$global:MAX_FILE_SIZE = 1GB  
-
-# Globales Event für den kontrollierten Abbruch (Strg+C)
-$global:AbortEvent = $false
+# ------------------------------------------------------------------------------
+# GLOBALER ZUSTAND (Thread-Safe für Parallel-Verarbeitung)
+# ------------------------------------------------------------------------------
+# In isolierten Threads (Runspaces) sind reguläre $global Variablen nicht verfügbar.
+# Wir nutzen eine synchronisierte Hashtabelle, damit der Haupt-Thread (Strg+C) 
+# sicher mit den Download-Threads kommunizieren kann.
+$global:SharedState = [hashtable]::Synchronized(@{
+    AbortEvent = $false
+    ChunkSize = 1MB
+    MaxFileSize = 1GB
+    UserAgent = "UniversalPodcastDownloader/1.0 (PowerShell; +https://github.com/lehrer-gym-ns)"
+})
 
 # Registrierung eines .NET-Events, um Strg+C (KeyboardInterrupt) sauber abzufangen
 try {
     [System.Console]::add_CancelKeyPress({
         $Event.SourceEventArgs.Cancel = $true
-        $global:AbortEvent = $true
+        $global:SharedState.AbortEvent = $true
         Write-Host "`n[WARNUNG] Abbruch durch Benutzer. Stoppe Warteschlange und aktive Downloads..." -ForegroundColor Yellow
     })
 } catch {
-    # Fallback, falls die Konsole das Event nicht unterstützt (z.B. in manchen IDEs)
+    # Fallback, falls die Konsole das Event nicht unterstützt
 }
 
 # Reservierte Windows-Namen auf Skript-Ebene abfangen
 $script:ReservedNames = @("CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9")
-
-$global:UserAgent = "UniversalPodcastDownloader/1.0 (PowerShell; +https://github.com/lehrer-gym-ns)"
 
 # ------------------------------------------------------------------------------
 # HILFSFUNKTIONEN
@@ -91,16 +94,17 @@ function Invoke-RobustDownload {
         [string]$PartPath,
         [int]$MaxRetries,
         [int]$TimeoutSec,
-        [int]$ProgressId = 1 # Eindeutige ID für parallele Fortschrittsbalken
+        [int]$ProgressId = 1, # Eindeutige ID für parallele Fortschrittsbalken
+        [hashtable]$State     # Der übergebene thread-sichere Status
     )
 
     for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
-        if ($global:AbortEvent) { return $false }
+        if ($State.AbortEvent) { return $false }
         $progressStarted = $false
 
         try {
             $request = [System.Net.HttpWebRequest][System.Net.WebRequest]::Create($DownloadUrl)
-            $request.UserAgent = $global:UserAgent
+            $request.UserAgent = $State.UserAgent
             $request.Timeout = $TimeoutSec * 1000 
 
             $initialSize = 0
@@ -117,7 +121,7 @@ function Invoke-RobustDownload {
             $response = $request.GetResponse()
             $totalSize = if ($response.ContentLength -ge 0) { $response.ContentLength + $initialSize } else { 0 }
             
-            if ($totalSize -gt $global:MAX_FILE_SIZE) {
+            if ($totalSize -gt $State.MaxFileSize) {
                 Write-Log "Datei überschreitet 1GB-Limit, überspringe: $(Split-Path $FinalPath -Leaf)" -Level "WARN"
                 return $false
             }
@@ -133,7 +137,7 @@ function Invoke-RobustDownload {
             $fileStream = New-Object System.IO.FileStream($PartPath, $fileMode, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
             $responseStream = $response.GetResponseStream()
 
-            $buffer = New-Object byte[] $global:CHUNK_SIZE
+            $buffer = New-Object byte[] $State.ChunkSize
             $downloaded = $initialSize
             $progressStarted = $true
             
@@ -141,7 +145,7 @@ function Invoke-RobustDownload {
 
             try {
                 while (($read = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                    if ($global:AbortEvent) { throw "Abbruch durch Benutzer (Event)" }
+                    if ($State.AbortEvent) { throw "Abbruch durch Benutzer (Event)" }
                     
                     $fileStream.Write($buffer, 0, $read)
                     $downloaded += $read
@@ -175,7 +179,7 @@ function Invoke-RobustDownload {
 
         } catch {
             if ($progressStarted) { Write-Progress -Id $ProgressId -Activity "Lade: $(Split-Path $FinalPath -Leaf)" -Completed }
-            if ($global:AbortEvent) { return $false }
+            if ($State.AbortEvent) { return $false }
 
             $errMsg = $_.Exception.Message
             if ($attempt -lt $MaxRetries) {
@@ -184,7 +188,7 @@ function Invoke-RobustDownload {
                 
                 # Sleep in Schritten, um auf ABORT_EVENT reagieren zu können
                 for ($i = 0; $i -lt ($sleepTime * 10); $i++) {
-                    if ($global:AbortEvent) { return $false }
+                    if ($State.AbortEvent) { return $false }
                     Start-Sleep -Milliseconds 100
                 }
             } else {
@@ -218,7 +222,7 @@ function New-M3uPlaylist {
 # 1. Konfiguration einlesen (CLI -> JSON -> OPML -> Defaults)
 $feedUrls = @()
 
-# Automatische Erkennung: Falls kein Parameter übergeben wurde, standardmäßig nach config.json suchen
+# Automatische Erkennung: Falls kein Parameter übergeben wurde, nach config.json suchen
 if ([string]::IsNullOrWhiteSpace($Config) -and (Test-Path "config.json")) {
     $Config = "config.json"
 }
@@ -231,7 +235,7 @@ if (-not [string]::IsNullOrWhiteSpace($Config) -and (Test-Path $Config)) {
         if ($cfg.urls) { $feedUrls += $cfg.urls }
         if ($cfg.output -and $Output -eq (Join-Path $HOME "Podcasts\MeinPodcast")) { $Output = $cfg.output }
         
-        # Neue Parameter auswerten (überschreiben Defaults, aber keine aktiven CLI-Eingaben)
+        # Neue Parameter auswerten
         if ($null -ne $cfg.limit -and $Limit -eq 0) { $Limit = [int]$cfg.limit }
         if ($null -ne $cfg.workers -and $Workers -eq 1) { $Workers = [int]$cfg.workers }
         if ($null -ne $cfg.retries -and $Retries -eq 3) { $Retries = [int]$cfg.retries }
@@ -278,11 +282,11 @@ $totalFailed = 0
 
 # 3. Feeds abarbeiten
 foreach ($feedUrl in $feedUrls) {
-    if ($global:AbortEvent) { break }
+    if ($global:SharedState.AbortEvent) { break }
     Write-Log "Analysiere Feed: $feedUrl"
 
     try {
-        $feedRequest = Invoke-WebRequest -Uri $feedUrl -UserAgent $global:UserAgent -UseBasicParsing -TimeoutSec 30
+        $feedRequest = Invoke-WebRequest -Uri $feedUrl -UserAgent $global:SharedState.UserAgent -UseBasicParsing -TimeoutSec 30
         [xml]$feed = $feedRequest.Content
     } catch {
         Write-Log "Überspringe Feed wegen Fehler: $_" -Level "ERROR"
@@ -347,12 +351,24 @@ foreach ($feedUrl in $feedUrls) {
 
         # MULTITHREADING-LOGIK: Feature-Detection für PowerShell 7+
         if ($Workers -gt 1 -and $PSVersionTable.PSVersion.Major -ge 7) {
-            # Modernes PowerShell Multithreading
+            # Modernes PowerShell Multithreading (Isolierte Runspaces)
+            
+            # WICHTIGE ÄNDERUNG: Funktionen werden als reiner Text (String) exportiert.
+            # So umgehen wir die Sicherheitsbeschränkung, da wir keinen aktiven Code über $using: schleusen.
+            $funcRobustStr = ${function:Invoke-RobustDownload}.ToString()
+            $funcLogStr = ${function:Write-Log}.ToString()
+            $shared = $global:SharedState
+
             $results = $tasks | ForEach-Object -Parallel {
+                # Funktionen im isolierten Thread dynamisch aus dem Text neu kompilieren
+                Set-Item -Path "Function:Invoke-RobustDownload" -Value ([scriptblock]::Create($using:funcRobustStr))
+                Set-Item -Path "Function:Write-Log" -Value ([scriptblock]::Create($using:funcLogStr))
+                
                 $task = $_
                 $workerId = [System.Threading.Thread]::CurrentThread.ManagedThreadId
                 
-                $success = Invoke-RobustDownload -DownloadUrl $task.Url -FinalPath $task.Final -PartPath $task.Part -MaxRetries $using:Retries -TimeoutSec $using:TimeoutSec -ProgressId $workerId
+                # Download-Funktion aufrufen und unseren shared State übergeben
+                $success = Invoke-RobustDownload -DownloadUrl $task.Url -FinalPath $task.Final -PartPath $task.Part -MaxRetries $using:Retries -TimeoutSec $using:TimeoutSec -ProgressId $workerId -State $using:shared
                 
                 if ($success) { Write-Log "✔ Abgeschlossen: $($task.Name)" -Level "SUCCESS" }
                 [PSCustomObject]@{ Success = $success }
@@ -362,29 +378,29 @@ foreach ($feedUrl in $feedUrls) {
             $totalFailed += ($results | Where-Object Success -eq $false).Count
         } 
         else {
-            # Fallback für PowerShell 5.1 (Windows Standard)
+            # Fallback für PowerShell 5.1 (Windows Standard, sequenziell)
             if ($Workers -gt 1) { Write-Log "Multithreading erfordert PowerShell 7+. Führe Downloads sequenziell aus." -Level "WARN" }
             
             foreach ($task in $tasks) {
-                if ($global:AbortEvent) { break }
-                $success = Invoke-RobustDownload -DownloadUrl $task.Url -FinalPath $task.Final -PartPath $task.Part -MaxRetries $Retries -TimeoutSec $TimeoutSec -ProgressId 1
+                if ($global:SharedState.AbortEvent) { break }
+                $success = Invoke-RobustDownload -DownloadUrl $task.Url -FinalPath $task.Final -PartPath $task.Part -MaxRetries $Retries -TimeoutSec $TimeoutSec -ProgressId 1 -State $global:SharedState
                 
                 if ($success) { 
                     Write-Log "✔ Abgeschlossen: $($task.Name)" -Level "SUCCESS"
                     $totalDownloaded++ 
                 } else { 
-                    if (-not $global:AbortEvent) { $totalFailed++ }
+                    if (-not $global:SharedState.AbortEvent) { $totalFailed++ }
                 }
             }
         }
     }
 
-    if ($M3u -and -not $DryRun -and -not $global:AbortEvent) {
+    if ($M3u -and -not $DryRun -and -not $global:SharedState.AbortEvent) {
         New-M3uPlaylist -Folder $Output -Title "Podcast"
     }
 }
 
-if (-not $global:AbortEvent) {
+if (-not $global:SharedState.AbortEvent) {
     Write-Log "=================================================="
     Write-Log "SYNCHRONISATION ABGESCHLOSSEN"
     Write-Log "✅ Heruntergeladen: $totalDownloaded"
