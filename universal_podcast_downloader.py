@@ -145,7 +145,7 @@ class ProgressManager:
             sys.stdout.write(f"\033[{self.lines_printed}A")
             sys.stdout.flush()
             
-            # KORREKTUR: Zeilenzähler nach dem Löschen zurücksetzen!
+            # Zeilenzähler nach dem Löschen zurücksetzen!
             self.lines_printed = 0
 
     def _render(self):
@@ -446,8 +446,9 @@ def main() -> None:
     feed_urls = list(set(feed_urls))
     
     # HTTP-Header: Maskierung als Browser (verhindert 403 Forbidden Fehler durch CDNs/Cloudflare)
+    # Vollkommen neutral und datenschutzfreundlich - kein Bezug auf das lokale Repository
     headers = {
-        'User-Agent': 'UniversalPodcastDownloader/1.0 (Python; +https://github.com/lehrer-gym-ns)'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     }
 
     base_output_folder = Path(args.output)
