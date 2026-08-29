@@ -26,40 +26,34 @@ from typing import List, Tuple, Optional, Dict, Any
 
 # ==============================================================================
 # KONSTANTEN & DEFAULTS
-# Diese Standardwerte werden verwendet, wenn das Skript ohne Parameter aufgerufen wird.
 # ==============================================================================
 DEFAULT_RSS_URL = "https://beispiel-url.de/podcast/feed.rss"
-DEFAULT_DOWNLOAD_FOLDER = str(Path.home() / "Podcasts" / "MeinPodcast") # Standardmäßig im Benutzerverzeichnis
-DEFAULT_LIMIT = 0           # 0 bedeutet: Alle verfügbaren Episoden herunterladen
-DEFAULT_TIMEOUT = 60        # Netzwerk-Timeout in Sekunden (verhindert endloses Blockieren)
-DEFAULT_WORKERS = 1         # Anzahl der parallelen Downloads (Multithreading)
+DEFAULT_DOWNLOAD_FOLDER = str(Path.home() / "Podcasts" / "MeinPodcast")
+DEFAULT_LIMIT = 0
+DEFAULT_TIMEOUT = 60
+DEFAULT_WORKERS = 1
 
-# 1 MB Blöcke (Chunking) verhindern, dass der Arbeitsspeicher (RAM) bei großen Dateien überläuft.
 CHUNK_SIZE = 1 << 20  
-# Schutzmaßnahme: Ignoriert Dateien, die größer als 1 GB sind (z. B. bei fehlerhaften Server-Headern).
 MAX_FILE_SIZE = 1024 * 1024 * 1024  
 
-# Reservierte Dateinamen unter Windows. Diese dürfen auch ohne Dateiendung nicht verwendet werden.
 RESERVED_NAMES = {
     "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", 
     "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", 
     "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
 }
 
-# Globales Event, um Threads bei einem Programmabbruch (KeyboardInterrupt) sofort zu stoppen.
 ABORT_EVENT = threading.Event()
 
 # ==============================================================================
 # KLASSEN & LOGGING
 # ==============================================================================
 class ColorFormatter(logging.Formatter):
-    """Fügt ANSI-Farben basierend auf dem Log-Level hinzu, um die Konsole übersichtlicher zu machen."""
     COLORS = {
-        logging.DEBUG: "\033[90m",    # Grau
-        logging.INFO: "\033[36m",     # Cyan
-        logging.WARNING: "\033[33m",  # Gelb
-        logging.ERROR: "\033[31m",    # Rot
-        logging.CRITICAL: "\033[1m\033[31m", # Fett Rot
+        logging.DEBUG: "\033[90m",
+        logging.INFO: "\033[36m",
+        logging.WARNING: "\033[33m",
+        logging.ERROR: "\033[31m",
+        logging.CRITICAL: "\033[1m\033[31m",
     }
     RESET = "\033[0m"
 
@@ -69,22 +63,15 @@ class ColorFormatter(logging.Formatter):
         return super().format(record)
 
 def setup_logging() -> None:
-    """Richtet das zentralisierte, farbige Logging ein."""
-    # Aktiviert ANSI-Farbunterstützung im nativen Windows-Terminal
     if os.name == 'nt':
         os.system("") 
-        
     handler = logging.StreamHandler()
     handler.setFormatter(ColorFormatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
     logging.basicConfig(level=logging.INFO, handlers=[handler])
 
 class ProgressManager:
-    """
-    Verwaltet thread-sicher eine mehrzeilige Fortschrittsanzeige in der Konsole.
-    Verhindert Zeichensalat, wenn mehrere Threads gleichzeitig ihren Status melden.
-    """
     def __init__(self, total_files: int):
-        self.lock = threading.Lock() # Mutex für sicheren Zugriff durch mehrere Threads
+        self.lock = threading.Lock()
         self.active: Dict[str, Dict[str, Any]] = {}
         self.completed = 0
         self.total_files = total_files
@@ -92,7 +79,6 @@ class ProgressManager:
         self.last_render = 0.0
 
     def update(self, filename: str, downloaded: int, total: int, speed_bps: float, eta_sec: float):
-        """Aktualisiert die Fortschrittsdaten eines aktiven Downloads."""
         with self.lock:
             self.active[filename] = {
                 "downloaded": downloaded,
@@ -101,55 +87,43 @@ class ProgressManager:
                 "eta": eta_sec
             }
             now = time.time()
-            # Rendert maximal ~5 Mal pro Sekunde, um Flimmern und CPU-Last zu minimieren
             if now - self.last_render > 0.2 or downloaded == total:
                 self._render()
                 self.last_render = now
 
     def complete(self, filename: str, success: bool):
-        """Entfernt eine abgeschlossene Datei aus der aktiven Anzeige und aktualisiert den Zähler."""
         with self.lock:
-            self._clear_lines() # Zuerst die aktuellen Balken ausblenden
-            
+            self._clear_lines()
             if filename in self.active:
                 del self.active[filename]
             self.completed += 1
-            
             if success and not ABORT_EVENT.is_set():
-                # Erfolgsmeldung permanent (wie im PowerShell-Skript) ins Log schreiben
                 t = time.strftime('%Y-%m-%d %H:%M:%S')
                 sys.stdout.write(f"{t} [\033[32mSUCCESS\033[0m] \033[32m✔ Abgeschlossen: {filename}\033[0m\n")
-            
-            self._render() # Balken unterhalb der neuen Log-Zeile wieder aufbauen
+            self._render()
 
     def log_error(self, message: str):
-        """Erlaubt das Schreiben von Fehler-Logs, ohne die Fortschrittsbalken zu zerstören."""
         with self.lock:
             self._clear_lines()
             logging.error(message)
             self._render()
 
     def log_warning(self, message: str):
-        """Erlaubt das Schreiben von Warnungen, ohne die Fortschrittsbalken zu zerstören."""
         with self.lock:
             self._clear_lines()
             logging.warning(message)
             self._render()
 
     def _clear_lines(self):
-        """Löscht die aktuell in der Konsole gerenderten Zeilen."""
         if self.lines_printed > 0:
-            sys.stdout.write(f"\033[{self.lines_printed}A") # Cursor nach oben
+            sys.stdout.write(f"\033[{self.lines_printed}A")
             for _ in range(self.lines_printed):
-                sys.stdout.write("\033[K\n") # Zeile löschen
+                sys.stdout.write("\033[K\n")
             sys.stdout.write(f"\033[{self.lines_printed}A")
             sys.stdout.flush()
-            
-            # Zeilenzähler nach dem Löschen zurücksetzen!
             self.lines_printed = 0
 
     def _render(self):
-        """Zeichnet die mehrzeilige Fortschrittsanzeige in die Konsole."""
         if self.lines_printed > 0:
             sys.stdout.write(f"\033[{self.lines_printed}A")
 
@@ -162,7 +136,6 @@ class ProgressManager:
             speed = stats["speed"] / (1024*1024)
             eta = format_eta(stats["eta"])
 
-            # Kürzt den Dateinamen für eine aufgeräumte, tabellarische Optik
             short_fname = fname[:30] + "..." if len(fname) > 33 else fname.ljust(33)
             
             if tot > 0:
@@ -181,7 +154,6 @@ class ProgressManager:
 # HILFSFUNKTIONEN
 # ==============================================================================
 def validate_url(url: str) -> bool:
-    """Prüft, ob die angegebene URL strukturell gültig ist."""
     try:
         result = urlparse(url)
         return all([result.scheme, result.netloc])
@@ -189,20 +161,16 @@ def validate_url(url: str) -> bool:
         return False
 
 def clean_filename(title: str) -> str:
-    """Bereinigt den Episodentitel, um Probleme mit dem Dateisystem zu vermeiden."""
-    # Ungültige Sonderzeichen entfernen
-    safe_title = re.sub(r'[<>:"/\\|?*]', '-', title)
+    # Entfernt unsichtbare Steuerzeichen (\x00-\x1f) und illegale Windows-Zeichen
+    safe_title = re.sub(r'[\x00-\x1f<>:"/\\|?*]', '-', title)
+    # Entfernt trailing spaces und dots (ungültig am Dateiende in Windows)
+    safe_title = safe_title[:150].strip(' .')
     
-    # Begrenzung der Länge zur Vermeidung von MAX_PATH-Fehlern unter Windows (häufig 260 Zeichen max)
-    safe_title = safe_title[:150].strip()
-    
-    # Abfangen von reservierten Windows-Systemnamen
     if safe_title.upper() in RESERVED_NAMES:
         safe_title = f"Episode_{safe_title}"
     return safe_title
 
 def cleanup_old_parts(folder: Path, days_old: int = 7) -> None:
-    """Sucht und löscht .part-Dateien, die älter als X Tage sind, um Datenmüll zu vermeiden."""
     now = time.time()
     count = 0
     for part_file in folder.glob("*.part"):
@@ -213,7 +181,6 @@ def cleanup_old_parts(folder: Path, days_old: int = 7) -> None:
         logging.info(f"Bereinigung: {count} veraltete .part-Datei(en) gelöscht.")
 
 def format_eta(seconds: float) -> str:
-    """Formatiert eine Zeitspanne in Sekunden in ein lesbares MM:SS oder HH:MM:SS Format."""
     if seconds < 0 or seconds == float('inf'):
         return "--:--"
     m, s = divmod(int(seconds), 60)
@@ -226,7 +193,6 @@ def format_eta(seconds: float) -> str:
 # KERN-LOGIK
 # ==============================================================================
 def parse_opml(file_path: str) -> List[str]:
-    """Extrahiert alle gültigen RSS-Feed-URLs aus einer OPML-Export-Datei (z.B. aus Podcast-Apps)."""
     urls = []
     try:
         tree = ET.parse(file_path)
@@ -238,8 +204,7 @@ def parse_opml(file_path: str) -> List[str]:
         logging.error(f"Fehler beim Parsen der OPML-Datei {file_path}: {e}")
     return urls
 
-def parse_feed(url: str, headers: Dict[str, str], timeout: int) -> List[ET.Element]:
-    """Lädt die XML-Daten herunter und extrahiert alle Episoden (Items/Entries)."""
+def parse_feed(url: str, headers: Dict[str, str], timeout: int) -> Tuple[str, List[ET.Element]]:
     if not validate_url(url):
         raise ValueError(f"Ungültige Feed-URL: {url}")
         
@@ -250,33 +215,36 @@ def parse_feed(url: str, headers: Dict[str, str], timeout: int) -> List[ET.Eleme
     
     root = ET.fromstring(xml_data)
     
-    # Namespace-agnostische Suche, um sowohl klassische RSS- (<item>) als auch Atom-Feeds (<entry>) zu unterstützen
+    # Extraktion des Channel-Titels (für den Unterordner-Namen)
+    channel_title = root.find('./channel/title')
+    atom_title = root.find('./{http://www.w3.org/2005/Atom}title')
+    
+    if channel_title is not None and channel_title.text:
+        feed_title = channel_title.text.strip()
+    elif atom_title is not None and atom_title.text:
+        feed_title = atom_title.text.strip()
+    else:
+        feed_title = "Unbekannter_Podcast"
+    
     items = [elem for elem in root.iter() if elem.tag.endswith('item') or elem.tag.endswith('entry')]
-    return items
+    return feed_title, items
 
 def extract_episode_data(item: ET.Element) -> Tuple[str, Optional[str], str]:
-    """Extrahiert iterativ den Titel, die MP3-URL und ein geeignetes Nummerierungs-Präfix."""
     title = "Unbekannte_Episode"
     mp3_url = None
     prefix = ""
 
     for child in item:
-        # Namespace abschneiden (z.B. {http://www.itunes.com/dtds/podcast-1.0.dtd}episode -> episode)
         tag_name = child.tag.split('}')[-1]
         
         if tag_name == 'title' and child.text:
             title = child.text.strip()
-            
         elif tag_name == 'enclosure' and child.get('url'):
             mp3_url = child.get('url')
-            
         elif tag_name == 'link' and child.get('rel') == 'enclosure' and child.get('href'):
             mp3_url = child.get('href')
-            
         elif tag_name == 'episode' and child.text and child.text.strip().isdigit():
             prefix = f"{int(child.text.strip()):03d} - "
-            
-        # Fallback: Wenn keine Episodennummer vorhanden ist, das Publikationsdatum nutzen
         elif tag_name in ('pubDate', 'published', 'updated') and not prefix:
             try:
                 dt = parsedate_to_datetime(child.text)
@@ -288,7 +256,6 @@ def extract_episode_data(item: ET.Element) -> Tuple[str, Optional[str], str]:
 
 def download_episode(url: str, final_path: Path, part_path: Path, headers: Dict[str, str], 
                      max_retries: int, timeout_sec: int, pm: ProgressManager) -> bool:
-    """Führt den eigentlichen Download aus. Enthält Chunking, Range-Resume und Retry-Backoff."""
     for attempt in range(1, max_retries + 1):
         if ABORT_EVENT.is_set():
             return False
@@ -298,8 +265,6 @@ def download_episode(url: str, final_path: Path, part_path: Path, headers: Dict[
             initial_size = 0
             mode = 'wb'
 
-            # Resume-Logik: Falls eine unfertige Datei (.part) existiert, ermitteln wir deren Größe
-            # und fordern über den HTTP-Header "Range" nur die fehlenden Bytes an.
             if part_path.exists():
                 initial_size = part_path.stat().st_size
                 req_headers['Range'] = f"bytes={initial_size}-"
@@ -307,13 +272,11 @@ def download_episode(url: str, final_path: Path, part_path: Path, headers: Dict[
             req = urllib.request.Request(url, headers=req_headers)
             with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
                 
-                # Wenn der Server den Range-Header ignoriert (liefert Status 200 statt 206 Partial Content),
-                # fangen wir von vorne an.
                 if initial_size > 0 and resp.status != 206:
                     initial_size = 0
                     mode = 'wb'
                 elif initial_size > 0 and resp.status == 206:
-                    mode = 'ab' # Append-Modus (anfügen)
+                    mode = 'ab'
 
                 total_size = int(resp.headers.get('Content-Length', 0))
                 if total_size > 0:
@@ -331,14 +294,18 @@ def download_episode(url: str, final_path: Path, part_path: Path, headers: Dict[
                         if ABORT_EVENT.is_set():
                             return False
 
-                        # Daten in definierten Blöcken lesen (Speicherschonend)
                         chunk = resp.read(CHUNK_SIZE)
                         if not chunk:
                             break
+                        
                         out_file.write(chunk)
                         downloaded += len(chunk)
                         
-                        # Statistiken für den ProgressManager berechnen
+                        # In-Flight Prüfung, falls Content-Length vom Server nicht geliefert wurde
+                        if downloaded > MAX_FILE_SIZE:
+                            pm.log_warning(f"Datei überschreitet 1GB-Limit während des Downloads, Abbruch: {final_path.name}")
+                            return False
+                        
                         now = time.time()
                         elapsed = now - start_time
                         speed_bps = (downloaded - initial_size) / elapsed if elapsed > 0 else 0
@@ -346,11 +313,9 @@ def download_episode(url: str, final_path: Path, part_path: Path, headers: Dict[
                         
                         pm.update(final_path.name, downloaded, total_size, speed_bps, eta)
 
-                # Nach Abschluss prüfen, ob die Verbindung vorzeitig abgerissen ist
                 if total_size > 0 and downloaded < total_size:
                     raise urllib.error.URLError("Download unvollständig (Verbindung abgerissen)")
 
-                # Download vollständig: Temporäre Part-Datei in finale Zieldatei umbenennen
                 part_path.rename(final_path)
                 return True
 
@@ -359,11 +324,10 @@ def download_episode(url: str, final_path: Path, part_path: Path, headers: Dict[
                 return False
 
             if attempt < max_retries:
-                # Exponentielles Backoff: Wartezeit verdoppelt sich bei jedem fehlgeschlagenen Versuch (2s, 4s, 8s...)
-                sleep_time = 2 ** attempt
+                # Gedeckelter Backoff (Maximal 60 Sekunden Wartezeit)
+                sleep_time = min(2 ** attempt, 60)
                 pm.log_warning(f"Fehler bei {final_path.name} (Versuch {attempt}): {e}. Warte {sleep_time}s...")
                 
-                # Warten in kleinen Intervallen, um bei einem Programmabbruch (ABORT_EVENT) sofort reagieren zu können
                 for _ in range(sleep_time * 10):
                     if ABORT_EVENT.is_set(): return False
                     time.sleep(0.1)
@@ -374,7 +338,6 @@ def download_episode(url: str, final_path: Path, part_path: Path, headers: Dict[
     return False
 
 def generate_m3u(folder: Path, feed_title: str) -> None:
-    """Erstellt eine klassische M3U-Playlist für alle MP3-Dateien im Zielverzeichnis."""
     playlist_path = folder / f"{clean_filename(feed_title)}_Playlist.m3u"
     mp3_files = sorted(folder.glob("*.mp3"))
     
@@ -394,7 +357,6 @@ def generate_m3u(folder: Path, feed_title: str) -> None:
 # MAIN (Programm-Einstiegspunkt)
 # ==============================================================================
 def main() -> None:
-    # Definition der Kommandozeilen-Parameter (CLI)
     parser = argparse.ArgumentParser(description="Ein robuster Podcast-Downloader für RSS & Atom Feeds.")
     parser.add_argument("-u", "--url", default=None, help="URL des RSS-Feeds")
     parser.add_argument("-c", "--config", type=str, help="Pfad zur config.json")
@@ -409,11 +371,12 @@ def main() -> None:
     
     args = parser.parse_args()
     setup_logging()
-
-    # Konfiguration laden (Priorität: CLI -> JSON Config -> Defaults)
-    feed_urls = []
     
-    # Automatische Erkennung: Falls kein Parameter übergeben wurde, standardmäßig nach config.json suchen
+    # Validierung
+    args.workers = max(1, args.workers)
+
+    feed_urls = []
+    config_provided = args.config is not None
     config_file = args.config if args.config else "config.json"
     
     if Path(config_file).exists():
@@ -422,16 +385,16 @@ def main() -> None:
             cfg = json.load(f)
             if "url" in cfg: feed_urls.append(cfg["url"])
             if "urls" in cfg: feed_urls.extend(cfg["urls"])
-            # Output-Verzeichnis aus Config nutzen, falls kein abweichender CLI-Parameter übergeben wurde
             if "output" in cfg and args.output == DEFAULT_DOWNLOAD_FOLDER: args.output = cfg["output"]
             
-            # Neue Parameter auswerten (überschreiben Defaults, aber keine aktiven CLI-Eingaben)
             if "limit" in cfg and args.limit == DEFAULT_LIMIT: args.limit = cfg["limit"]
-            if "workers" in cfg and args.workers == DEFAULT_WORKERS: args.workers = cfg["workers"]
+            if "workers" in cfg and args.workers == DEFAULT_WORKERS: args.workers = max(1, cfg["workers"])
             if "retries" in cfg and args.retries == 3: args.retries = cfg["retries"]
             if "timeout" in cfg and args.timeout == DEFAULT_TIMEOUT: args.timeout = cfg["timeout"]
             if "m3u" in cfg and not args.m3u: args.m3u = cfg["m3u"]
             if "dry_run" in cfg and not args.dry_run: args.dry_run = cfg["dry_run"]
+    elif config_provided:
+        logging.warning(f"Angegebene Konfigurationsdatei nicht gefunden: {config_file}")
             
     if args.opml:
         feed_urls.extend(parse_opml(args.opml))
@@ -442,21 +405,15 @@ def main() -> None:
     if not feed_urls:
         feed_urls.append(DEFAULT_RSS_URL)
 
-    # Dubletten entfernen (falls dieselbe URL aus mehreren Quellen stammt)
-    feed_urls = list(set(feed_urls))
+    # Dubletten entfernen (Reihenfolge beibehalten)
+    feed_urls = list(dict.fromkeys(feed_urls))
     
-    # HTTP-Header: Maskierung als Browser (verhindert 403 Forbidden Fehler durch CDNs/Cloudflare)
-    # Vollkommen neutral und datenschutzfreundlich - kein Bezug auf das lokale Repository
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
     }
 
     base_output_folder = Path(args.output)
-    if not args.dry_run:
-        base_output_folder.mkdir(parents=True, exist_ok=True)
-        cleanup_old_parts(base_output_folder)
-
-    # Globale Statistik-Variablen über alle Feeds hinweg
+    
     total_downloaded = 0
     total_skipped = 0
     total_failed = 0
@@ -465,15 +422,22 @@ def main() -> None:
         if ABORT_EVENT.is_set(): break
         
         try:
-            items = parse_feed(feed_url, headers, args.timeout)
+            feed_title, items = parse_feed(feed_url, headers, args.timeout)
         except Exception as e:
             logging.error(f"Überspringe Feed wegen Fehler: {e}")
             continue
             
         if args.limit > 0:
             items = items[:args.limit]
+            
+        # Generiere dynamischen Unterordner anhand des Podcast-Titels
+        safe_feed_title = clean_filename(feed_title)
+        feed_output_folder = base_output_folder / safe_feed_title
+        
+        if not args.dry_run:
+            feed_output_folder.mkdir(parents=True, exist_ok=True)
+            cleanup_old_parts(feed_output_folder)
 
-        # Download-Warteschlange für den aktuellen Feed aufbauen
         download_tasks = []
         for item in items:
             title, mp3_url, prefix = extract_episode_data(item)
@@ -481,10 +445,10 @@ def main() -> None:
                 continue
                 
             safe_title = clean_filename(title)
-            # Dateiendung dynamisch extrahieren (unterstützt neben .mp3 z.B. auch .m4a oder .ogg)
             ext = Path(urlparse(mp3_url).path).suffix or ".mp3"
             
-            file_path = base_output_folder / f"{prefix}{safe_title}{ext}"
+            # Nutze den modifizierten Unterordner
+            file_path = feed_output_folder / f"{prefix}{safe_title}{ext}"
             part_path = file_path.with_suffix(ext + ".part")
             
             if file_path.exists():
@@ -504,17 +468,14 @@ def main() -> None:
             pm = ProgressManager(len(download_tasks))
             pm._render()
             
-            # ThreadPoolExecutor für Multithreading initialisieren
             executor = ThreadPoolExecutor(max_workers=args.workers)
             try:
-                # Threads in den Executor übergeben (submit) und die entsprechenden Dateinamen im Dictionary speichern
                 futures = {
                     executor.submit(
                         download_episode, url, fpath, ppath, headers, args.retries, args.timeout, pm
                     ): fpath.name for url, fpath, ppath in download_tasks
                 }
 
-                # Verarbeitung der abgeschlossenen Threads (egal in welcher Reihenfolge sie fertig werden)
                 for future in as_completed(futures):
                     fname = futures[future]
                     try:
@@ -532,21 +493,18 @@ def main() -> None:
                         pm.complete(fname, success)
             
             except KeyboardInterrupt:
-                # Fängt das Strg+C während laufender Downloads ab
                 ABORT_EVENT.set()
                 pm.log_warning("Abbruch durch Benutzer. Stoppe Warteschlange und aktive Downloads...")
-                # Verhindert den Start neuer Threads
                 executor.shutdown(wait=False, cancel_futures=True)
                 sys.exit(0)
             finally:
-                # Sauberes Herunterfahren des Executors im Normalfall
                 if not ABORT_EVENT.is_set():
                     executor.shutdown(wait=True)
 
+        # Generiere die M3U nun PRO FEED direkt im jeweiligen Unterordner
         if args.m3u and not args.dry_run and not ABORT_EVENT.is_set():
-            generate_m3u(base_output_folder, "Podcast")
+            generate_m3u(feed_output_folder, feed_title)
 
-    # Abschlussbericht ausgeben
     if not ABORT_EVENT.is_set():
         logging.info("=" * 50)
         logging.info("SYNCHRONISATION ABGESCHLOSSEN")
@@ -560,7 +518,6 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        # Fallback-Catch, falls der Abbruch außerhalb der ThreadPoolExecutor-Schleife passiert (z.B. beim Feed-Parsing)
         ABORT_EVENT.set()
         print("\n\033[93mAbbruch durch Benutzer.\033[0m")
         sys.exit(0)
