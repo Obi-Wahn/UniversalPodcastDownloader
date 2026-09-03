@@ -28,7 +28,7 @@ Das Projekt ist darauf ausgelegt, große Audiodateien zuverlässig herunterzulad
 
 Sie können das Zielverzeichnis und die Feed-URLs auf drei Arten definieren:
 
-> 1. **Kommandozeile (CLI):** Übergabe der Parameter beim Aufruf (siehe Tabellen unten). Manuell übergebene CLI-Werte haben dabei immer Vorrang.  
+> 1. **Kommandozeile (CLI):** Übergabe der Parameter beim Aufruf (siehe Tabellen unten). Manuell übergebene CLI-Werte haben dabei immer Vorrang. Ist in der `config.json` ein `output`-Pfad angegeben, wird dieser verwendet; ist weder `-o`/`-Output` noch `output` in der Config gesetzt, legen die Skripte automatisch einen Ordner `Podcasts` direkt im Skriptordner an.  
 > 2. **config.json:** Eine JSON-Datei, die *alle* verfügbaren Parameter (Limit, Workers, Retries etc.) zentral abbilden kann. Fehlt eine manuell angegebene Config-Datei, warnt das Skript nun zuverlässig. Eine datenschutzfreundliche config.example.json liegt dem Projekt bei.  
 > 3. **OPML-Datei:** Eine von Podcatchern exportierte XML-Datei, aus der das Skript alle Feed-URLs extrahiert und nacheinander abarbeitet.
 
@@ -43,7 +43,7 @@ Sie können das Zielverzeichnis und die Feed-URLs auf drei Arten definieren:
 | \--url | \-u | Die URL des RSS/Atom-Feeds. | *Beispiel-URL* |
 | \--config | \-c | Pfad zu einer config.json. | \- |
 | \--opml |  | Pfad zu einer OPML-Datei (für Massen-Downloads). | \- |
-| \--output | \-o | Absoluter Pfad zum Basis-Zielverzeichnis. | \~/Podcasts/MeinPodcast |
+| \--output | \-o | Absoluter Pfad zum Basis-Zielverzeichnis. | ./Podcasts (im Skriptordner) |
 | \--limit | \-l | Lädt nur die neuesten N Episoden (0 \= alle). | 0 |
 | \--retries |  | Maximale Anzahl der Fehler-Wiederholungen. | 3 |
 | \--timeout | \-t | Netzwerk-Timeout in Sekunden. | 60 |
@@ -76,7 +76,7 @@ python3 universal\_podcast\_downloader.py \--dry-run
 | \-Url | Die URL des RSS/Atom-Feeds. | *Beispiel-URL* |
 | \-Config | Pfad zu einer config.json. | \- |
 | \-Opml | Pfad zu einer OPML-Datei (für Massen-Downloads). | \- |
-| \-Output | Absoluter Pfad zum Basis-Zielverzeichnis. | $HOME\\Podcasts\\MeinPodcast |
+| \-Output | Absoluter Pfad zum Basis-Zielverzeichnis. | .\\Podcasts (im Skriptordner) |
 | \-Limit | Lädt nur die neuesten N Episoden (0 \= alle). | 0 |
 | \-Retries | Maximale Anzahl der Fehler-Wiederholungen. | 3 |
 | \-TimeoutSec | Netzwerk-Timeout in Sekunden. | 60 |
