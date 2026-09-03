@@ -4,7 +4,7 @@ Dieses Repository enthält zwei native, hochrobuste Kommandozeilen-Werkzeuge (Po
 Das Projekt ist darauf ausgelegt, große Audiodateien zuverlässig herunterzuladen, Netzwerkabbrüche abzufangen und Dateisystemfehler bei der Benennung proaktiv zu verhindern. Beide Skripte arbeiten vollständig mit den jeweiligen Bordmitteln des Betriebssystems und benötigen **keine externen Module oder Abhängigkeiten**.
 
 * **PowerShell (universal\_podcast\_downloader.ps1):** Optimiert für Windows-Umgebungen. Nutzt native .NET-Klassen für optimiertes Streaming und unterstützt Multithreading ab PowerShell 7\.  
-* **Python (universal\_podcast\_downloader.py):** Optimiert für Linux und macOS. Vollständig typisiert und auf maximale Performance durch asynchrone Aufgabenverteilung ausgelegt.
+* **Python (universal\_podcast\_downloader.py):** Optimiert für Linux und macOS. Vollständig typisiert und auf maximale Performance durch parallele Downloads (Multithreading) ausgelegt.
 
 ## **Kernfunktionen**
 
@@ -30,7 +30,7 @@ Sie können das Zielverzeichnis und die Feed-URLs auf drei Arten definieren:
 
 ## **🐍 Nutzung der Python-Variante (Linux / macOS)**
 
-**Voraussetzung:** Python 3.2 oder neuer (Standard auf den meisten unixoiden Systemen).
+**Voraussetzung:** Python 3.6 oder neuer (Standard auf den meisten unixoiden Systemen).
 
 ### **CLI-Parameter (Python)**
 
