@@ -20,6 +20,7 @@ import urllib.error
 from urllib.parse import urlparse
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from datetime import datetime
 from email.utils import parsedate_to_datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Tuple, Optional, Dict, Any
@@ -37,10 +38,17 @@ CHUNK_SIZE = 1 << 20
 MAX_FILE_SIZE = 1024 * 1024 * 1024  
 
 RESERVED_NAMES = {
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", 
-    "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", 
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5",
+    "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4",
     "LPT5", "LPT6", "LPT7", "LPT8", "LPT9"
 }
+
+# Manifest pro Feed-Ordner: merkt sich bereits geladene Episoden anhand ihrer GUID,
+# damit ein geänderter Titel keinen erneuten Download derselben Episode auslöst.
+MANIFEST_FILENAME = ".downloaded.json"
+
+# Content-Types, die auf eine Fehlerseite statt echter Audiodaten hindeuten
+REJECTED_CONTENT_TYPES = {"text/html", "text/plain", "application/json", "application/xml", "text/xml"}
 
 ABORT_EVENT = threading.Event()
 
@@ -180,6 +188,42 @@ def cleanup_old_parts(folder: Path, days_old: int = 7) -> None:
     if count > 0:
         logging.info(f"Bereinigung: {count} veraltete .part-Datei(en) gelöscht.")
 
+def load_manifest(folder: Path) -> Dict[str, str]:
+    """Lädt das GUID-Manifest eines Feed-Ordners (leeres Dict, falls nicht vorhanden/lesbar)."""
+    manifest_path = folder / MANIFEST_FILENAME
+    if not manifest_path.exists():
+        return {}
+    try:
+        with open(manifest_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+def save_manifest(folder: Path, manifest: Dict[str, str]) -> None:
+    """Speichert das GUID-Manifest eines Feed-Ordners."""
+    manifest_path = folder / MANIFEST_FILENAME
+    try:
+        with open(manifest_path, 'w', encoding='utf-8') as f:
+            json.dump(manifest, f, ensure_ascii=False, indent=2)
+    except OSError as e:
+        logging.error(f"Konnte Manifest nicht speichern: {e}")
+
+def get_retry_after_seconds(exc: Exception) -> Optional[float]:
+    """Liest bei HTTP 429 den Retry-After-Header aus (Sekunden oder HTTP-Datum)."""
+    if not isinstance(exc, urllib.error.HTTPError) or exc.code != 429:
+        return None
+    header = exc.headers.get('Retry-After') if exc.headers else None
+    if not header:
+        return None
+    header = header.strip()
+    if header.isdigit():
+        return float(header)
+    try:
+        dt = parsedate_to_datetime(header)
+        return max((dt - datetime.now(dt.tzinfo)).total_seconds(), 0)
+    except (TypeError, ValueError):
+        return None
+
 def format_eta(seconds: float) -> str:
     if seconds < 0 or seconds == float('inf'):
         return "--:--"
@@ -229,20 +273,24 @@ def parse_feed(url: str, headers: Dict[str, str], timeout: int) -> Tuple[str, Li
     items = [elem for elem in root.iter() if elem.tag.endswith('item') or elem.tag.endswith('entry')]
     return feed_title, items
 
-def extract_episode_data(item: ET.Element) -> Tuple[str, Optional[str], str]:
+def extract_episode_data(item: ET.Element) -> Tuple[str, Optional[str], str, Optional[str]]:
     title = "Unbekannte_Episode"
     mp3_url = None
     prefix = ""
+    guid = None
 
     for child in item:
         tag_name = child.tag.split('}')[-1]
-        
+
         if tag_name == 'title' and child.text:
             title = child.text.strip()
         elif tag_name == 'enclosure' and child.get('url'):
             mp3_url = child.get('url')
         elif tag_name == 'link' and child.get('rel') == 'enclosure' and child.get('href'):
             mp3_url = child.get('href')
+        elif tag_name in ('guid', 'id') and child.text and not guid:
+            # RSS <guid> bzw. Atom <id> - eindeutiger Bezeichner der Episode fürs Dedup-Manifest
+            guid = child.text.strip()
         elif tag_name == 'episode' and child.text and child.text.strip().isdigit():
             prefix = f"{int(child.text.strip()):03d} - "
         elif tag_name in ('pubDate', 'published', 'updated') and not prefix:
@@ -251,8 +299,8 @@ def extract_episode_data(item: ET.Element) -> Tuple[str, Optional[str], str]:
                 prefix = f"{dt.strftime('%Y-%m-%d')} - "
             except (ValueError, TypeError):
                 pass
-                
-    return title, mp3_url, prefix
+
+    return title, mp3_url, prefix, guid
 
 def download_episode(url: str, final_path: Path, part_path: Path, headers: Dict[str, str], 
                      max_retries: int, timeout_sec: int, pm: ProgressManager) -> bool:
@@ -284,6 +332,11 @@ def download_episode(url: str, final_path: Path, part_path: Path, headers: Dict[
                     
                 if total_size > MAX_FILE_SIZE:
                     pm.log_warning(f"Datei überschreitet 1GB-Limit, überspringe: {final_path.name}")
+                    return False
+
+                content_type = resp.headers.get('Content-Type', '').split(';')[0].strip().lower()
+                if content_type in REJECTED_CONTENT_TYPES:
+                    pm.log_warning(f"Unerwarteter Content-Type '{content_type}' (evtl. Fehlerseite), überspringe: {final_path.name}")
                     return False
 
                 downloaded = initial_size
@@ -327,11 +380,13 @@ def download_episode(url: str, final_path: Path, part_path: Path, headers: Dict[
                 return False
 
             if attempt < max_retries:
-                # Gedeckelter Backoff (Maximal 60 Sekunden Wartezeit)
-                sleep_time = min(2 ** attempt, 60)
-                pm.log_warning(f"Fehler bei {final_path.name} (Versuch {attempt}): {e}. Warte {sleep_time}s...")
-                
-                for _ in range(sleep_time * 10):
+                # Server-seitige Wartezeit (Retry-After bei HTTP 429) hat Vorrang vor dem
+                # gedeckelten Backoff (Maximal 60 Sekunden Wartezeit)
+                retry_after = get_retry_after_seconds(e)
+                sleep_time = min(retry_after, 300) if retry_after is not None else min(2 ** attempt, 60)
+                pm.log_warning(f"Fehler bei {final_path.name} (Versuch {attempt}): {e}. Warte {sleep_time:.0f}s...")
+
+                for _ in range(int(sleep_time * 10)):
                     if ABORT_EVENT.is_set(): return False
                     time.sleep(0.1)
             else:
@@ -359,7 +414,7 @@ def generate_m3u(folder: Path, feed_title: str) -> None:
 # ==============================================================================
 # MAIN (Programm-Einstiegspunkt)
 # ==============================================================================
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description="Ein robuster Podcast-Downloader für RSS & Atom Feeds.")
     parser.add_argument("-u", "--url", default=None, help="URL des RSS-Feeds")
     parser.add_argument("-c", "--config", type=str, help="Pfad zur config.json")
@@ -441,27 +496,33 @@ def main() -> None:
             feed_output_folder.mkdir(parents=True, exist_ok=True)
             cleanup_old_parts(feed_output_folder)
 
+        # GUID-Manifest laden: erkennt bereits geladene Episoden auch dann wieder,
+        # wenn sich der Titel (und damit der Dateiname) im Feed geändert hat.
+        manifest = load_manifest(feed_output_folder)
+
         download_tasks = []
         for item in items:
-            title, mp3_url, prefix = extract_episode_data(item)
+            title, mp3_url, prefix, guid = extract_episode_data(item)
             if not mp3_url:
                 continue
-                
+
+            dedup_key = guid or mp3_url
             safe_title = clean_filename(title)
             ext = Path(urlparse(mp3_url).path).suffix or ".mp3"
-            
+
             # Nutze den modifizierten Unterordner
             file_path = feed_output_folder / f"{prefix}{safe_title}{ext}"
             part_path = file_path.with_suffix(ext + ".part")
-            
-            if file_path.exists():
+
+            # Dedup primär über die GUID, zusätzlich über Dateiexistenz (Altbestand ohne Manifest)
+            if dedup_key in manifest or file_path.exists():
                 logging.debug(f"Überspringe: {file_path.name}")
                 total_skipped += 1
             else:
-                download_tasks.append((mp3_url, file_path, part_path))
+                download_tasks.append((mp3_url, file_path, part_path, dedup_key))
 
         if args.dry_run:
-            for _, fpath, _ in download_tasks:
+            for _, fpath, _, _ in download_tasks:
                 logging.info(f"DRY-RUN: Würde laden: {fpath.name}")
             continue
 
@@ -476,15 +537,17 @@ def main() -> None:
                 futures = {
                     executor.submit(
                         download_episode, url, fpath, ppath, headers, args.retries, args.timeout, pm
-                    ): fpath.name for url, fpath, ppath in download_tasks
+                    ): (fpath.name, dedup_key) for url, fpath, ppath, dedup_key in download_tasks
                 }
 
                 for future in as_completed(futures):
-                    fname = futures[future]
+                    fname, dedup_key = futures[future]
                     try:
                         success = future.result()
                         if success:
                             total_downloaded += 1
+                            manifest[dedup_key] = fname
+                            save_manifest(feed_output_folder, manifest)
                         else:
                             total_failed += 1
                     except Exception as e:
@@ -517,9 +580,11 @@ def main() -> None:
             logging.warning(f"❌ Fehlgeschlagen:  {total_failed}")
         logging.info("=" * 50)
 
+    return 1 if total_failed > 0 else 0
+
 if __name__ == "__main__":
     try:
-        main()
+        sys.exit(main())
     except KeyboardInterrupt:
         ABORT_EVENT.set()
         print("\n\033[93mAbbruch durch Benutzer.\033[0m")
