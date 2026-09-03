@@ -222,10 +222,19 @@ function Invoke-RobustDownload {
 
             $errMsg = $_.Exception.Message
 
-            # Retry-After-Header bei HTTP 429 auslesen (Sekunden oder HTTP-Datum)
+            # Retry-After-Header bei HTTP 429 auslesen (Sekunden oder HTTP-Datum).
+            # .GetResponse() wirft aus einem Methodenaufruf heraus, daher steckt die
+            # eigentliche WebException oft in InnerException statt direkt in $_.Exception.
             $retryAfter = $null
-            if ($_.Exception -is [System.Net.WebException] -and $_.Exception.Response) {
-                $webResponse = $_.Exception.Response
+            $webException = if ($_.Exception -is [System.Net.WebException]) {
+                $_.Exception
+            } elseif ($_.Exception.InnerException -is [System.Net.WebException]) {
+                $_.Exception.InnerException
+            } else {
+                $null
+            }
+            if ($webException -and $webException.Response) {
+                $webResponse = $webException.Response
                 if ([int]$webResponse.StatusCode -eq 429) {
                     $retryAfterHeader = $webResponse.Headers["Retry-After"]
                     if ($retryAfterHeader) {
