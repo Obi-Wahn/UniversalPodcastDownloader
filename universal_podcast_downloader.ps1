@@ -12,7 +12,7 @@ param (
     [string]$Url = "https://beispiel-url.de/podcast/feed.rss",
     [string]$Config = "",
     [string]$Opml = "",
-    [string]$Output = (Join-Path -Path $HOME -ChildPath "Podcasts\MeinPodcast"),
+    [string]$Output = (Join-Path -Path $(if ($PSScriptRoot) { $PSScriptRoot } else { Get-Location }) -ChildPath "Podcasts"),
     [int]$Limit = 0,
     [int]$Retries = 3,
     [int]$TimeoutSec = 60,
@@ -309,7 +309,7 @@ if (-not [string]::IsNullOrWhiteSpace($configToLoad)) {
         $cfg = Get-Content $configToLoad -Raw | ConvertFrom-Json
         if ($cfg.url) { $feedUrls += $cfg.url }
         if ($cfg.urls) { $feedUrls += $cfg.urls }
-        if ($cfg.output -and $Output -eq (Join-Path $HOME "Podcasts\MeinPodcast")) { $Output = $cfg.output }
+        if ($cfg.output -and $Output -eq (Join-Path -Path $(if ($PSScriptRoot) { $PSScriptRoot } else { Get-Location }) -ChildPath "Podcasts")) { $Output = $cfg.output }
 
         if ($null -ne $cfg.limit -and $Limit -eq 0) { $Limit = [int]$cfg.limit }
         if ($null -ne $cfg.workers -and $Workers -eq 1) { $Workers = [int]$cfg.workers }

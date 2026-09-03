@@ -29,7 +29,7 @@ from typing import List, Tuple, Optional, Dict, Any
 # KONSTANTEN & DEFAULTS
 # ==============================================================================
 DEFAULT_RSS_URL = "https://beispiel-url.de/podcast/feed.rss"
-DEFAULT_DOWNLOAD_FOLDER = str(Path.home() / "Podcasts" / "MeinPodcast")
+DEFAULT_DOWNLOAD_FOLDER = str(Path(__file__).resolve().parent / "Podcasts")
 DEFAULT_LIMIT = 0
 DEFAULT_TIMEOUT = 60
 DEFAULT_WORKERS = 1
