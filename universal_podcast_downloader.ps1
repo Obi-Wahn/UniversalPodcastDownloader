@@ -310,7 +310,7 @@ if (-not [string]::IsNullOrWhiteSpace($configToLoad)) {
         if ($null -ne $cfg.dry_run -and -not $DryRun) { $DryRun = [bool]$cfg.dry_run }
 
         if ($Workers -lt 1) { $Workers = 1 }
-    } catch { Write-Log "Fehler beim Lesen der $configToLoad: $_" -Level "ERROR" }
+    } catch { Write-Log "Fehler beim Lesen der ${configToLoad}: $_" -Level "ERROR" }
 }
 
 if (-not [string]::IsNullOrWhiteSpace($Opml) -and (Test-Path $Opml)) {
