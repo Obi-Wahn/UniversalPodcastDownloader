@@ -9,6 +9,9 @@ Das Projekt ist darauf ausgelegt, große Audiodateien zuverlässig herunterzulad
 ## **Kernfunktionen**
 
 * **Automatische Ordnerstruktur:** Die Skripte parsen den Titel des Podcasts direkt aus dem Feed und erstellen für jedes Abonnement automatisch einen eigenen, aufgeräumten Unterordner im Zielverzeichnis.  
+* **GUID-basiertes Dedup-Manifest:** Pro Feed-Unterordner wird eine `.downloaded.json` gepflegt, die Episoden anhand ihrer Feed-GUID (RSS `<guid>` / Atom `<id>`) als bereits geladen markiert. Ändert sich später nur der Episodentitel, wird sie dank Manifest trotzdem korrekt übersprungen statt erneut heruntergeladen.  
+* **Content-Type-Prüfung:** Antwortet ein Server statt der erwarteten Audiodatei mit einer HTML-/JSON-/XML-Fehlerseite (z. B. bei einem toten Link), wird der Download sofort abgebrochen, statt die Fehlerseite als Episode zu speichern.  
+* **Respektiert `Retry-After` bei Rate-Limits:** Antwortet ein Server mit HTTP 429, warten die Skripte die vom Server über den `Retry-After`-Header vorgegebene Zeit (Sekunden oder HTTP-Datum, gedeckelt auf 5 Minuten), statt blind den Standard-Backoff zu nutzen.  
 * **Parallele Downloads (Multithreading):** Steigern Sie die Download-Geschwindigkeit massiv, indem Sie mehrere Episoden gleichzeitig herunterladen.  
 * **OPML-Import & JSON-Konfiguration (Auto-Detect):** Übernehmen Sie Ihre Podcasts aus Apple Podcasts, AntennaPod o.ä. mittels OPML-Datei, oder verwalten Sie Ihre Abonnements zentral über eine config.json. Liegt die Datei im Skript-Verzeichnis, wird sie vollautomatisch erkannt.  
 * **Echtes Download-Resume:** Bricht die Netzwerkverbindung ab, fangen die Skripte dank Range-Headern nicht von vorne an, sondern setzen den Download bytegenau an der Abbruchstelle fort.  
@@ -18,7 +21,8 @@ Das Projekt ist darauf ausgelegt, große Audiodateien zuverlässig herunterzulad
 * **Graceful Shutdown:** Wird das Skript durch den Nutzer abgebrochen (Strg+C), werden aktive Netzwerkverbindungen sauber geschlossen und temporäre Dateien für den späteren Resume-Vorgang gesichert.  
 * **Fortschrittsanzeige & Logging:** Live-Fortschrittsbalken im Terminal (inklusive Downloadgeschwindigkeit in MB/s und ETA-Berechnung) sowie strukturierte Status- und Fehlermeldungen mit Zeitstempel.  
 * **M3U-Playlisten:** Erzeugen Sie nach dem Download automatisch eine sauber benannte .m3u-Playlist (z.B. PodcastTitel\_Playlist.m3u) direkt im Unterordner des jeweiligen Feeds.  
-* **Dry-Run Modus:** Testen Sie das Parsing und die Namensgenerierung des Feeds risikolos, ohne Daten herunterzuladen.
+* **Dry-Run Modus:** Testen Sie das Parsing und die Namensgenerierung des Feeds risikolos, ohne Daten herunterzuladen.  
+* **Aussagekräftiger Exit-Code:** Für den unbeaufsichtigten Betrieb (Cron, Task Scheduler) beenden sich beide Skripte mit Exit-Code `1`, sobald mindestens eine Episode endgültig fehlgeschlagen ist – so lassen sich Fehler automatisiert erkennen.
 
 ## **Konfigurationsmöglichkeiten**
 

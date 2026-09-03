@@ -64,6 +64,32 @@ function Get-SafeFileName {
     return $safeTitle
 }
 
+function Get-DownloadManifest {
+    # GUID-Manifest eines Feed-Ordners laden: merkt sich bereits geladene Episoden,
+    # damit ein geänderter Titel keinen erneuten Download derselben Episode auslöst.
+    param([string]$Folder)
+    $manifestPath = Join-Path -Path $Folder -ChildPath ".downloaded.json"
+    if (-not (Test-Path $manifestPath)) { return @{} }
+    try {
+        $raw = Get-Content $manifestPath -Raw | ConvertFrom-Json
+        $manifest = @{}
+        if ($raw) {
+            foreach ($prop in $raw.PSObject.Properties) { $manifest[$prop.Name] = $prop.Value }
+        }
+        return $manifest
+    } catch { return @{} }
+}
+
+function Save-DownloadManifest {
+    param([string]$Folder, [hashtable]$Manifest)
+    $manifestPath = Join-Path -Path $Folder -ChildPath ".downloaded.json"
+    try {
+        $Manifest | ConvertTo-Json | Out-File -FilePath $manifestPath -Encoding UTF8
+    } catch {
+        Write-Log "Konnte Manifest nicht speichern: $_" -Level "ERROR"
+    }
+}
+
 function Invoke-CleanupOldParts {
     param([string]$Folder, [int]$DaysOld = 7)
     if (-not (Test-Path $Folder)) { return }
@@ -121,6 +147,15 @@ function Invoke-RobustDownload {
             if ($initialSize -gt 0 -and -not $isPartial) {
                 $initialSize = 0
                 $appendMode = $false
+            }
+
+            # Content-Type validieren: eine Fehlerseite (z.B. HTML/JSON statt Audio) nicht als Episode speichern
+            $rejectedContentTypes = @("text/html", "text/plain", "application/json", "application/xml", "text/xml")
+            $contentType = if ($response.ContentType) { $response.ContentType.Split(';')[0].Trim().ToLower() } else { "" }
+            if ($rejectedContentTypes -contains $contentType) {
+                Write-Log "Unerwarteter Content-Type '$contentType' (evtl. Fehlerseite), überspringe: $(Split-Path $FinalPath -Leaf)" -Level "WARN"
+                $response.Close()
+                return $false
             }
 
             $fileMode = if ($appendMode -and $isPartial) { [System.IO.FileMode]::Append } else { [System.IO.FileMode]::Create }
@@ -186,9 +221,31 @@ function Invoke-RobustDownload {
             if ($State.AbortEvent) { return $false }
 
             $errMsg = $_.Exception.Message
+
+            # Retry-After-Header bei HTTP 429 auslesen (Sekunden oder HTTP-Datum)
+            $retryAfter = $null
+            if ($_.Exception -is [System.Net.WebException] -and $_.Exception.Response) {
+                $webResponse = $_.Exception.Response
+                if ([int]$webResponse.StatusCode -eq 429) {
+                    $retryAfterHeader = $webResponse.Headers["Retry-After"]
+                    if ($retryAfterHeader) {
+                        $seconds = 0
+                        if ([int]::TryParse($retryAfterHeader, [ref]$seconds)) {
+                            $retryAfter = $seconds
+                        } else {
+                            try {
+                                $retryDate = [datetime]::Parse($retryAfterHeader, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal -bor [System.Globalization.DateTimeStyles]::AdjustToUniversal)
+                                $retryAfter = [math]::Max(($retryDate - [datetime]::UtcNow).TotalSeconds, 0)
+                            } catch {}
+                        }
+                    }
+                }
+                $webResponse.Close()
+            }
+
             if ($attempt -lt $MaxRetries) {
-                # Punkt 4: Deckel beim Backoff (max 60 Sekunden)
-                $sleepTime = [math]::Min([math]::Pow(2, $attempt), 60)
+                # Server-seitige Wartezeit (Retry-After) hat Vorrang vor dem gedeckelten Backoff (max 60s)
+                $sleepTime = if ($null -ne $retryAfter) { [math]::Min($retryAfter, 300) } else { [math]::Min([math]::Pow(2, $attempt), 60) }
                 Write-Log "Fehler bei Versuch $attempt/${MaxRetries}: $errMsg. Warte ${sleepTime}s..." -Level "WARN"
 
                 for ($i = 0; $i -lt ($sleepTime * 10); $i++) {
@@ -320,6 +377,10 @@ foreach ($feedUrl in $feedUrls) {
         New-Item -ItemType Directory -Path $feedOutputFolder | Out-Null
     }
 
+    # GUID-Manifest laden: erkennt bereits geladene Episoden auch dann wieder,
+    # wenn sich der Titel (und damit der Dateiname) im Feed geändert hat.
+    $manifest = Get-DownloadManifest -Folder $feedOutputFolder
+
     $items = $feed.SelectNodes("//*[local-name()='item' or local-name()='entry']")
     if (-not $items -or $items.Count -eq 0) { continue }
 
@@ -342,6 +403,10 @@ foreach ($feedUrl in $feedUrls) {
         if (-not [string]::IsNullOrWhiteSpace($mediaUrl)) {
             $safeTitle = Get-SafeFileName -Title $title
 
+            $guidNode = $item.SelectSingleNode("*[local-name()='guid' or local-name()='id']")
+            $guid = if ($guidNode -and -not [string]::IsNullOrWhiteSpace($guidNode.InnerText)) { $guidNode.InnerText.Trim() } else { $null }
+            $dedupKey = if ($guid) { $guid } else { $mediaUrl }
+
             $prefix = ""
             $epNode = $item.SelectSingleNode("*[local-name()='episode']")
             if ($epNode -and $epNode.InnerText -match "^\d+$") { $prefix = "{0:D3} - " -f [int]($epNode.InnerText.Trim()) }
@@ -359,11 +424,12 @@ foreach ($feedUrl in $feedUrls) {
             $filePath = Join-Path -Path $feedOutputFolder -ChildPath $fileName
             $partPath = "$filePath.part"
 
-            if (Test-Path -Path $filePath) {
+            # Dedup primär über die GUID, zusätzlich über Dateiexistenz (Altbestand ohne Manifest)
+            if ($manifest.ContainsKey($dedupKey) -or (Test-Path -Path $filePath)) {
                 Write-Log "Überspringe: $fileName" -Level "INFO"
                 $totalSkipped++
             } else {
-                $tasks += [PSCustomObject]@{ Url = $mediaUrl; Final = $filePath; Part = $partPath; Name = $fileName }
+                $tasks += [PSCustomObject]@{ Url = $mediaUrl; Final = $filePath; Part = $partPath; Name = $fileName; DedupKey = $dedupKey }
             }
         }
     }
@@ -391,11 +457,17 @@ foreach ($feedUrl in $feedUrls) {
                 $success = Invoke-RobustDownload -DownloadUrl $task.Url -FinalPath $task.Final -PartPath $task.Part -MaxRetries $using:Retries -TimeoutSec $using:TimeoutSec -ProgressId $workerId -State $using:shared
 
                 if ($success) { Write-Log "✔ Abgeschlossen: $($task.Name)" -Level "SUCCESS" }
-                [PSCustomObject]@{ Success = $success }
+                [PSCustomObject]@{ Success = $success; DedupKey = $task.DedupKey; Name = $task.Name }
             } -ThrottleLimit $Workers
 
-            $totalDownloaded += ($results | Where-Object Success -eq $true).Count
+            $succeeded = @($results | Where-Object Success -eq $true)
+            $totalDownloaded += $succeeded.Count
             $totalFailed += ($results | Where-Object Success -eq $false).Count
+
+            if ($succeeded.Count -gt 0) {
+                foreach ($r in $succeeded) { $manifest[$r.DedupKey] = $r.Name }
+                Save-DownloadManifest -Folder $feedOutputFolder -Manifest $manifest
+            }
         }
         else {
             if ($Workers -gt 1) { Write-Log "Multithreading erfordert PowerShell 7+. Führe Downloads sequenziell aus." -Level "WARN" }
@@ -407,6 +479,8 @@ foreach ($feedUrl in $feedUrls) {
                 if ($success) {
                     Write-Log "✔ Abgeschlossen: $($task.Name)" -Level "SUCCESS"
                     $totalDownloaded++
+                    $manifest[$task.DedupKey] = $task.Name
+                    Save-DownloadManifest -Folder $feedOutputFolder -Manifest $manifest
                 } else {
                     if (-not $global:SharedState.AbortEvent) { $totalFailed++ }
                 }
@@ -427,4 +501,5 @@ if (-not $global:SharedState.AbortEvent) {
     Write-Log "⏭️ Übersprungen:   $totalSkipped"
     if ($totalFailed -gt 0) { Write-Log "❌ Fehlgeschlagen:  $totalFailed" -Level "WARN" }
     Write-Log "=================================================="
+    if ($totalFailed -gt 0) { exit 1 }
 }
