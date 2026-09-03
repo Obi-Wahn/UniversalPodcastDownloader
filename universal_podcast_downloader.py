@@ -426,6 +426,7 @@ def main() -> int:
     parser.add_argument("-w", "--workers", type=int, default=DEFAULT_WORKERS, help="Anzahl paralleler Downloads")
     parser.add_argument("--dry-run", action="store_true", help="Simuliert den Vorgang, lädt aber nichts herunter")
     parser.add_argument("--m3u", action="store_true", help="Erzeugt am Ende eine M3U-Playlist")
+    parser.add_argument("--flat", action="store_true", help="Kein automatischer Unterordner pro Podcast-Titel, Episoden landen direkt im Zielverzeichnis")
     
     args = parser.parse_args()
     setup_logging()
@@ -451,6 +452,7 @@ def main() -> int:
             if "timeout" in cfg and args.timeout == DEFAULT_TIMEOUT: args.timeout = cfg["timeout"]
             if "m3u" in cfg and not args.m3u: args.m3u = cfg["m3u"]
             if "dry_run" in cfg and not args.dry_run: args.dry_run = cfg["dry_run"]
+            if "flat" in cfg and not args.flat: args.flat = cfg["flat"]
     elif config_provided:
         logging.warning(f"Angegebene Konfigurationsdatei nicht gefunden: {config_file}")
             
@@ -489,8 +491,12 @@ def main() -> int:
             items = items[:args.limit]
             
         # Generiere dynamischen Unterordner anhand des Podcast-Titels
-        safe_feed_title = clean_filename(feed_title)
-        feed_output_folder = base_output_folder / safe_feed_title
+        # (--flat: Episoden landen ohne Unterordner direkt im Zielverzeichnis)
+        if args.flat:
+            feed_output_folder = base_output_folder
+        else:
+            safe_feed_title = clean_filename(feed_title)
+            feed_output_folder = base_output_folder / safe_feed_title
         
         if not args.dry_run:
             feed_output_folder.mkdir(parents=True, exist_ok=True)

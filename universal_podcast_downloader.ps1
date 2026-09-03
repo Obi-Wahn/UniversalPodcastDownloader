@@ -18,7 +18,8 @@ param (
     [int]$TimeoutSec = 60,
     [int]$Workers = 1,
     [switch]$DryRun,
-    [switch]$M3u
+    [switch]$M3u,
+    [switch]$Flat
 )
 
 # Punkt 10: Ungültige Workers-Werte abfangen
@@ -317,6 +318,7 @@ if (-not [string]::IsNullOrWhiteSpace($configToLoad)) {
         if ($null -ne $cfg.timeout -and $TimeoutSec -eq 60) { $TimeoutSec = [int]$cfg.timeout }
         if ($null -ne $cfg.m3u -and -not $M3u) { $M3u = [bool]$cfg.m3u }
         if ($null -ne $cfg.dry_run -and -not $DryRun) { $DryRun = [bool]$cfg.dry_run }
+        if ($null -ne $cfg.flat -and -not $Flat) { $Flat = [bool]$cfg.flat }
 
         if ($Workers -lt 1) { $Workers = 1 }
     } catch { Write-Log "Fehler beim Lesen der ${configToLoad}: $_" -Level "ERROR" }
@@ -380,7 +382,8 @@ foreach ($feedUrl in $feedUrls) {
         "Unbekannter_Podcast"
     }
 
-    $feedOutputFolder = Join-Path -Path $Output -ChildPath $feedTitle
+    # -Flat: Episoden landen ohne Unterordner direkt im Zielverzeichnis
+    $feedOutputFolder = if ($Flat) { $Output } else { Join-Path -Path $Output -ChildPath $feedTitle }
 
     if (-not $DryRun -and -not (Test-Path $feedOutputFolder)) {
         New-Item -ItemType Directory -Path $feedOutputFolder | Out-Null
