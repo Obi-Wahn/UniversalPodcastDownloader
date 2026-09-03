@@ -9,5 +9,6 @@
   "retries": 3,
   "timeout": 60,
   "m3u": false,
-  "dry_run": false
+  "dry_run": false,
+  "flat": false
 }

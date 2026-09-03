@@ -8,7 +8,7 @@ Das Projekt ist darauf ausgelegt, große Audiodateien zuverlässig herunterzulad
 
 ## **Kernfunktionen**
 
-* **Automatische Ordnerstruktur:** Die Skripte parsen den Titel des Podcasts direkt aus dem Feed und erstellen für jedes Abonnement automatisch einen eigenen, aufgeräumten Unterordner im Zielverzeichnis.  
+* **Automatische Ordnerstruktur:** Die Skripte parsen den Titel des Podcasts direkt aus dem Feed und erstellen für jedes Abonnement automatisch einen eigenen, aufgeräumten Unterordner im Zielverzeichnis. Ist das Zielverzeichnis bereits podcast-spezifisch (z. B. weil dort nur ein einzelner Feed archiviert wird), lässt sich dieser zusätzliche Unterordner per `--flat`/`-Flat` (bzw. `"flat": true` in der config.json) abschalten – die Episoden landen dann direkt im Zielverzeichnis.  
 * **GUID-basiertes Dedup-Manifest:** Pro Feed-Unterordner wird eine `.downloaded.json` gepflegt, die Episoden anhand ihrer Feed-GUID (RSS `<guid>` / Atom `<id>`) als bereits geladen markiert. Ändert sich später nur der Episodentitel, wird sie dank Manifest trotzdem korrekt übersprungen statt erneut heruntergeladen.  
 * **Content-Type-Prüfung:** Antwortet ein Server statt der erwarteten Audiodatei mit einer HTML-/JSON-/XML-Fehlerseite (z. B. bei einem toten Link), wird der Download sofort abgebrochen, statt die Fehlerseite als Episode zu speichern.  
 * **Respektiert `Retry-After` bei Rate-Limits:** Antwortet ein Server mit HTTP 429, warten die Skripte die vom Server über den `Retry-After`-Header vorgegebene Zeit (Sekunden oder HTTP-Datum, gedeckelt auf 5 Minuten), statt blind den Standard-Backoff zu nutzen.  
@@ -49,6 +49,7 @@ Sie können das Zielverzeichnis und die Feed-URLs auf drei Arten definieren:
 | \--timeout | \-t | Netzwerk-Timeout in Sekunden. | 60 |
 | \--workers | \-w | Anzahl der parallelen Download-Threads. | 1 |
 | \--m3u |  | Erzeugt nach dem Download eine M3U-Playlist. | False |
+| \--flat |  | Kein Unterordner pro Podcast-Titel, Episoden direkt im Zielverzeichnis. | False |
 | \--dry-run |  | Simuliert den Vorgang, ohne herunterzuladen. | False |
 | \--help | \-h | Zeigt die integrierte Hilfeseite an. | \- |
 
@@ -82,6 +83,7 @@ python3 universal\_podcast\_downloader.py \--dry-run
 | \-TimeoutSec | Netzwerk-Timeout in Sekunden. | 60 |
 | \-Workers | Anzahl der parallelen Download-Threads (nur PS 7+). | 1 |
 | \-M3u | Erzeugt nach dem Download eine M3U-Playlist. | $false |
+| \-Flat | Kein Unterordner pro Podcast-Titel, Episoden direkt im Zielverzeichnis. | $false |
 | \-DryRun | Simuliert den Vorgang, ohne herunterzuladen. | $false |
 
 **Beispiele:**
