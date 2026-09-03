@@ -304,6 +304,9 @@ def download_episode(url: str, final_path: Path, part_path: Path, headers: Dict[
                         # In-Flight Prüfung, falls Content-Length vom Server nicht geliefert wurde
                         if downloaded > MAX_FILE_SIZE:
                             pm.log_warning(f"Datei überschreitet 1GB-Limit während des Downloads, Abbruch: {final_path.name}")
+                            out_file.close()
+                            if part_path.exists():
+                                part_path.unlink()
                             return False
                         
                         now = time.time()

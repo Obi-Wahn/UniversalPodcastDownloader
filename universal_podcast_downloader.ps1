@@ -130,6 +130,7 @@ function Invoke-RobustDownload {
             $buffer = New-Object byte[] $State.ChunkSize
             $downloaded = $initialSize
             $progressStarted = $true
+            $oversized = $false
 
             $startTime = [datetime]::Now
 
@@ -140,9 +141,12 @@ function Invoke-RobustDownload {
                     $fileStream.Write($buffer, 0, $read)
                     $downloaded += $read
 
-                    # Punkt 5: Dateigrößen-Limit "In-Flight" überwachen (falls Content-Length fehlte)
+                    # Punkt 5: Dateigrößen-Limit "In-Flight" überwachen (falls Content-Length fehlte).
+                    # Bricht sofort ab (kein Retry) statt zu werfen, da die Datei bei jedem
+                    # erneuten Versuch wieder das Limit reißen würde.
                     if ($downloaded -gt $State.MaxFileSize) {
-                        throw "Datei überschreitet 1GB-Limit während des Downloads (fehlender Header)."
+                        $oversized = $true
+                        break
                     }
 
                     $elapsed = ([datetime]::Now - $startTime).TotalSeconds
@@ -162,6 +166,12 @@ function Invoke-RobustDownload {
                 if ($responseStream) { $responseStream.Close() }
                 if ($response) { $response.Close() }
                 if ($progressStarted) { Write-Progress -Id $ProgressId -Activity "Lade: $(Split-Path $FinalPath -Leaf)" -Completed }
+            }
+
+            if ($oversized) {
+                Write-Log "Datei überschreitet 1GB-Limit während des Downloads, Abbruch: $(Split-Path $FinalPath -Leaf)" -Level "WARN"
+                if (Test-Path $PartPath) { Remove-Item $PartPath -Force }
+                return $false
             }
 
             if ($totalSize -gt 0 -and $downloaded -lt $totalSize) {
