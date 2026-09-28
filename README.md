@@ -13,12 +13,12 @@ Das Projekt ist darauf ausgelegt, große Audiodateien zuverlässig herunterzulad
 * **Content-Type-Prüfung:** Antwortet ein Server statt der erwarteten Audiodatei mit einer HTML-/JSON-/XML-Fehlerseite (z. B. bei einem toten Link), wird der Download sofort abgebrochen, statt die Fehlerseite als Episode zu speichern.  
 * **Respektiert `Retry-After` bei Rate-Limits:** Antwortet ein Server mit HTTP 429, warten die Skripte die vom Server über den `Retry-After`-Header vorgegebene Zeit (Sekunden oder HTTP-Datum, gedeckelt auf 5 Minuten), statt blind den Standard-Backoff zu nutzen.  
 * **Parallele Downloads (Multithreading):** Steigern Sie die Download-Geschwindigkeit massiv, indem Sie mehrere Episoden gleichzeitig herunterladen.  
-* **OPML-Import & JSON-Konfiguration (Auto-Detect):** Übernehmen Sie Ihre Podcasts aus Apple Podcasts, AntennaPod o.ä. mittels OPML-Datei, oder verwalten Sie Ihre Abonnements zentral über eine config.json. Liegt die Datei im Skript-Verzeichnis, wird sie vollautomatisch erkannt.  
+* **OPML-Import & JSON-Konfiguration (Auto-Detect):** Übernehmen Sie Ihre Podcasts aus Apple Podcasts, AntennaPod o.ä. mittels OPML-Datei, oder verwalten Sie Ihre Abonnements zentral über eine config.json. Eine `config.json` im aktuellen Verzeichnis oder im Skriptordner wird vollautomatisch erkannt – so funktioniert sie auch in der Aufgabenplanung oder per Cron, die in einem anderen Arbeitsverzeichnis starten.  
 * **Echtes Download-Resume:** Bricht die Netzwerkverbindung ab, fangen die Skripte dank Range-Headern nicht von vorne an, sondern setzen den Download bytegenau an der Abbruchstelle fort.  
 * **Speicherschonendes Chunking & "In-Flight" Limit-Schutz:** Dateien werden in 1-MB-Blöcken verarbeitet. Der Arbeitsspeicher (RAM) wird selbst bei riesigen Dateien nicht überlastet. Ein integrierter Schutz bricht Downloads über 1 GB ab – selbst dann, wenn der Host-Server vorab keine Dateigröße übermittelt hat.  
 * **Retry-Logik mit gedeckeltem Backoff:** Bei Timeouts probieren die Skripte es automatisch erneut und verdoppeln dabei schonend die Wartezeit (2s, 4s, 8s...). Um Deadlocks zu vermeiden, ist die Wartezeit bei einem sicheren Maximum von 60 Sekunden gedeckelt.  
 * **Absolute Dateisystem-Sicherheit:** Bereinigung von Sonderzeichen und unsichtbaren Steuerzeichen, Entfernung von Leerzeichen am Dateiende, Begrenzung auf 150 Zeichen (Schutz vor MAX\_PATH-Fehlern) und Abfangen von reservierten Windows-Systemnamen (wie CON oder PRN).  
-* **Graceful Shutdown:** Wird das Skript durch den Nutzer abgebrochen (Strg+C), werden aktive Netzwerkverbindungen sauber geschlossen und temporäre Dateien für den späteren Resume-Vorgang gesichert.  
+* **Graceful Shutdown:** Wird das Skript durch den Nutzer abgebrochen (Strg+C), werden aktive Netzwerkverbindungen sauber geschlossen und temporäre `.part`-Dateien für den späteren Resume-Vorgang gesichert.  
 * **Fortschrittsanzeige & Logging:** Live-Fortschrittsbalken im Terminal (inklusive Downloadgeschwindigkeit in MB/s und ETA-Berechnung) sowie strukturierte Status- und Fehlermeldungen mit Zeitstempel.  
 * **M3U-Playlisten:** Erzeugen Sie nach dem Download automatisch eine sauber benannte .m3u-Playlist (z.B. PodcastTitel\_Playlist.m3u) direkt im Unterordner des jeweiligen Feeds.  
 * **Dry-Run Modus:** Testen Sie das Parsing und die Namensgenerierung des Feeds risikolos, ohne Daten herunterzuladen.  
@@ -29,12 +29,12 @@ Das Projekt ist darauf ausgelegt, große Audiodateien zuverlässig herunterzulad
 Sie können das Zielverzeichnis und die Feed-URLs auf drei Arten definieren:
 
 > 1. **Kommandozeile (CLI):** Übergabe der Parameter beim Aufruf (siehe Tabellen unten). Manuell übergebene CLI-Werte haben dabei immer Vorrang. Ist in der `config.json` ein `output`-Pfad angegeben, wird dieser verwendet; ist weder `-o`/`-Output` noch `output` in der Config gesetzt, legen die Skripte automatisch einen Ordner `Podcasts` direkt im Skriptordner an.  
-> 2. **config.json:** Eine JSON-Datei, die *alle* verfügbaren Parameter (Limit, Workers, Retries etc.) zentral abbilden kann. Fehlt eine manuell angegebene Config-Datei, warnt das Skript nun zuverlässig. Eine datenschutzfreundliche config.example.json liegt dem Projekt bei.  
+> 2. **config.json:** Eine JSON-Datei, die *alle* verfügbaren Parameter (Limit, Workers, Retries etc.) zentral abbilden kann. Gesucht wird zuerst im aktuellen Verzeichnis, dann im Skriptordner. Ein relativer `output`-Pfad (z. B. `"./Podcast-Archiv"`) bezieht sich auf den Ordner der `config.json`. Fehlt eine manuell angegebene Config-Datei, warnt das Skript; ist die Datei fehlerhaft, bricht es mit einer klaren Meldung und Exit-Code `1` ab. Eine datenschutzfreundliche config.example.json liegt dem Projekt bei.  
 > 3. **OPML-Datei:** Eine von Podcatchern exportierte XML-Datei, aus der das Skript alle Feed-URLs extrahiert und nacheinander abarbeitet.
 
 ## **🐍 Nutzung der Python-Variante (Linux / macOS)**
 
-**Voraussetzung:** Python 3.6 oder neuer (Standard auf den meisten unixoiden Systemen).
+**Voraussetzung:** Python 3.11 oder neuer. Aktuelle Linux-Distributionen bringen das mit. Unter macOS ist das mitgelieferte `python3` älter – dort Python über [python.org](https://www.python.org/downloads/) oder Homebrew (`brew install python`) installieren.
 
 ### **CLI-Parameter (Python)**
 
@@ -68,7 +68,8 @@ python3 universal\_podcast\_downloader.py \--dry-run
 ## **🪟 Nutzung der PowerShell-Variante (Windows)**
 
 **Voraussetzung:** Windows PowerShell 5.1 oder neuer. Multithreading (-Workers) erfordert **PowerShell 7+**.  
-*Hinweis: Möglicherweise müssen Sie die Skriptausführung einmalig erlauben (Set-ExecutionPolicy \-Scope CurrentUser \-ExecutionPolicy RemoteSigned).*
+*Hinweis: Möglicherweise müssen Sie die Skriptausführung einmalig erlauben (Set-ExecutionPolicy \-Scope CurrentUser \-ExecutionPolicy RemoteSigned).*  
+*Wichtig beim Bearbeiten: Die `.ps1` muss als **UTF-8 mit BOM** gespeichert bleiben. Ohne BOM liest Windows PowerShell 5.1 die Datei falsch und lädt stillschweigend nichts herunter.*
 
 ### **CLI-Parameter (PowerShell)**
 
@@ -97,6 +98,17 @@ PowerShell
 
 \# Konfiguration über eine JSON-Datei steuern  
 .\\universal\_podcast\_downloader.ps1 \-Config "C:\\pfad\\zu\\meinen\_podcasts.json"
+
+## **Tests**
+
+Eine gemeinsame Testsuite prüft beide Varianten gegen einen lokalen Test-Server (kein Internetzugriff nötig) – unter Python, PowerShell 7 und unter Windows zusätzlich Windows PowerShell 5.1. Sie läuft automatisch per GitHub Actions bei jedem Pull Request und lässt sich lokal starten mit:
+
+```
+python -m pip install pytest
+python -m pytest
+```
+
+Nicht installierte Shells werden dabei übersprungen. Die Skripte selbst bleiben frei von externen Abhängigkeiten.
 
 ## **Lizenz und Datenschutz**
 

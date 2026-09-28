@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     Universal Podcast Downloader (PowerShell Version)
@@ -12,7 +12,7 @@ param (
     [string]$Url = "https://beispiel-url.de/podcast/feed.rss",
     [string]$Config = "",
     [string]$Opml = "",
-    [string]$Output = (Join-Path -Path $(if ($PSScriptRoot) { $PSScriptRoot } else { Get-Location }) -ChildPath "Podcasts"),
+    [string]$Output = "",   # Standard: "Podcasts" im Skriptordner (wird unten gesetzt)
     [int]$Limit = 0,
     [int]$Retries = 3,
     [int]$TimeoutSec = 60,
@@ -26,19 +26,19 @@ param (
 if ($Workers -lt 1) { $Workers = 1 }
 
 $global:SharedState = [hashtable]::Synchronized(@{
-    AbortEvent = $false
     ChunkSize = 1MB
     MaxFileSize = 1GB
     UserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 })
 
-try {
-    [System.Console]::add_CancelKeyPress({
-        $Event.SourceEventArgs.Cancel = $true
-        $global:SharedState.AbortEvent = $true
-        Write-Host "`n[WARNUNG] Abbruch durch Benutzer. Stoppe Warteschlange und aktive Downloads..." -ForegroundColor Yellow
-    })
-} catch {}
+# Strg+C: PowerShell stoppt das Skript selbst und führt dabei die finally-Blöcke aus
+# (Streams werden geschlossen, .part-Dateien bleiben für das Resume erhalten).
+# Ein eigener [Console]::CancelKeyPress-Handler ist hier ungeeignet: Er läuft auf einem
+# Thread ohne Runspace und bringt PowerShell zum Absturz.
+
+$scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { (Get-Location).Path }
+# Standard-Zielordner erst hier setzen, damit er auf demselben $scriptDir basiert wie die Config-Suche
+if (-not $PSBoundParameters.ContainsKey('Output')) { $Output = Join-Path -Path $scriptDir -ChildPath "Podcasts" }
 
 $script:ReservedNames = @("CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9")
 
@@ -72,7 +72,7 @@ function Get-DownloadManifest {
     $manifestPath = Join-Path -Path $Folder -ChildPath ".downloaded.json"
     if (-not (Test-Path $manifestPath)) { return @{} }
     try {
-        $raw = Get-Content $manifestPath -Raw | ConvertFrom-Json
+        $raw = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $manifest = @{}
         if ($raw) {
             foreach ($prop in $raw.PSObject.Properties) { $manifest[$prop.Name] = $prop.Value }
@@ -115,7 +115,6 @@ function Invoke-RobustDownload {
     )
 
     for ($attempt = 1; $attempt -le $MaxRetries; $attempt++) {
-        if ($State.AbortEvent) { return $false }
         $progressStarted = $false
 
         try {
@@ -172,8 +171,6 @@ function Invoke-RobustDownload {
 
             try {
                 while (($read = $responseStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-                    if ($State.AbortEvent) { throw "Abbruch durch Benutzer (Event)" }
-
                     $fileStream.Write($buffer, 0, $read)
                     $downloaded += $read
 
@@ -219,7 +216,6 @@ function Invoke-RobustDownload {
 
         } catch {
             if ($progressStarted) { Write-Progress -Id $ProgressId -Activity "Lade: $(Split-Path $FinalPath -Leaf)" -Completed }
-            if ($State.AbortEvent) { return $false }
 
             $errMsg = $_.Exception.Message
 
@@ -257,11 +253,7 @@ function Invoke-RobustDownload {
                 # Server-seitige Wartezeit (Retry-After) hat Vorrang vor dem gedeckelten Backoff (max 60s)
                 $sleepTime = if ($null -ne $retryAfter) { [math]::Min($retryAfter, 300) } else { [math]::Min([math]::Pow(2, $attempt), 60) }
                 Write-Log "Fehler bei Versuch $attempt/${MaxRetries}: $errMsg. Warte ${sleepTime}s..." -Level "WARN"
-
-                for ($i = 0; $i -lt ($sleepTime * 10); $i++) {
-                    if ($State.AbortEvent) { return $false }
-                    Start-Sleep -Milliseconds 100
-                }
+                Start-Sleep -Milliseconds ([int]($sleepTime * 1000))
             } else {
                 Write-Log "Fehlgeschlagen nach $MaxRetries Versuchen: $(Split-Path $FinalPath -Leaf)" -Level "ERROR"
                 if (Test-Path $PartPath) { Remove-Item $PartPath -Force }
@@ -295,22 +287,31 @@ $feedUrls = @()
 # Punkt 6: Config überprüfen mit expliziter Warnung
 $configToLoad = ""
 if (-not [string]::IsNullOrWhiteSpace($Config)) {
-    if (Test-Path $Config) {
+    if (Test-Path -LiteralPath $Config) {
         $configToLoad = $Config
     } else {
         Write-Log "Angegebene Konfigurationsdatei '$Config' nicht gefunden! Verwende Standardwerte." -Level "WARN"
     }
-} elseif (Test-Path "config.json") {
-    $configToLoad = "config.json"
+} else {
+    # Automatische Erkennung: zuerst im aktuellen Verzeichnis, dann im Skriptordner
+    # (z.B. Aufgabenplanung, die standardmäßig in C:\Windows\System32 startet)
+    foreach ($candidate in @((Join-Path -Path (Get-Location).Path -ChildPath "config.json"), (Join-Path -Path $scriptDir -ChildPath "config.json"))) {
+        if (Test-Path -LiteralPath $candidate) { $configToLoad = $candidate; break }
+    }
 }
 
 if (-not [string]::IsNullOrWhiteSpace($configToLoad)) {
     Write-Log "Lade Konfiguration aus: $configToLoad" -Level "INFO"
     try {
-        $cfg = Get-Content $configToLoad -Raw | ConvertFrom-Json
+        # -Encoding UTF8: Windows PowerShell 5.1 liest sonst als ANSI (Umlaute in Pfaden!)
+        $cfg = Get-Content -LiteralPath $configToLoad -Raw -Encoding UTF8 | ConvertFrom-Json
         if ($cfg.url) { $feedUrls += $cfg.url }
         if ($cfg.urls) { $feedUrls += $cfg.urls }
-        if ($cfg.output -and $Output -eq (Join-Path -Path $(if ($PSScriptRoot) { $PSScriptRoot } else { Get-Location }) -ChildPath "Podcasts")) { $Output = $cfg.output }
+        if ($cfg.output -and -not $PSBoundParameters.ContainsKey('Output')) {
+            # Relative Pfade beziehen sich auf den Ordner der config.json, nicht auf das Arbeitsverzeichnis
+            $configDir = Split-Path -Parent (Resolve-Path -LiteralPath $configToLoad).Path
+            $Output = if ([System.IO.Path]::IsPathRooted($cfg.output)) { $cfg.output } else { [System.IO.Path]::GetFullPath((Join-Path -Path $configDir -ChildPath $cfg.output)) }
+        }
 
         if ($null -ne $cfg.limit -and $Limit -eq 0) { $Limit = [int]$cfg.limit }
         if ($null -ne $cfg.workers -and $Workers -eq 1) { $Workers = [int]$cfg.workers }
@@ -321,12 +322,16 @@ if (-not [string]::IsNullOrWhiteSpace($configToLoad)) {
         if ($null -ne $cfg.flat -and -not $Flat) { $Flat = [bool]$cfg.flat }
 
         if ($Workers -lt 1) { $Workers = 1 }
-    } catch { Write-Log "Fehler beim Lesen der ${configToLoad}: $_" -Level "ERROR" }
+    } catch {
+        # Mit einer kaputten Config weiterzumachen ist sinnlos (Platzhalter-URL, falscher Zielordner)
+        Write-Log "Fehler beim Lesen der ${configToLoad}: $_" -Level "ERROR"
+        exit 1
+    }
 }
 
 if (-not [string]::IsNullOrWhiteSpace($Opml) -and (Test-Path $Opml)) {
     try {
-        [xml]$opmlXml = Get-Content $Opml
+        [xml]$opmlXml = Get-Content -LiteralPath $Opml -Raw -Encoding UTF8
         $feedUrls += @($opmlXml.SelectNodes("//outline[@xmlUrl]") | ForEach-Object { $_.xmlUrl })
     } catch { Write-Log "Fehler beim Parsen der OPML-Datei: $_" -Level "ERROR" }
 }
@@ -362,7 +367,6 @@ $totalSkipped = 0
 $totalFailed = 0
 
 foreach ($feedUrl in $feedUrls) {
-    if ($global:SharedState.AbortEvent) { break }
     Write-Log "Analysiere Feed: $feedUrl"
 
     try {
@@ -485,7 +489,6 @@ foreach ($feedUrl in $feedUrls) {
             if ($Workers -gt 1) { Write-Log "Multithreading erfordert PowerShell 7+. Führe Downloads sequenziell aus." -Level "WARN" }
 
             foreach ($task in $tasks) {
-                if ($global:SharedState.AbortEvent) { break }
                 $success = Invoke-RobustDownload -DownloadUrl $task.Url -FinalPath $task.Final -PartPath $task.Part -MaxRetries $Retries -TimeoutSec $TimeoutSec -ProgressId 1 -State $global:SharedState
 
                 if ($success) {
@@ -494,24 +497,22 @@ foreach ($feedUrl in $feedUrls) {
                     $manifest[$task.DedupKey] = $task.Name
                     Save-DownloadManifest -Folder $feedOutputFolder -Manifest $manifest
                 } else {
-                    if (-not $global:SharedState.AbortEvent) { $totalFailed++ }
+                    $totalFailed++
                 }
             }
         }
     }
 
-    if ($M3u -and -not $DryRun -and -not $global:SharedState.AbortEvent) {
+    if ($M3u -and -not $DryRun) {
         # Playlist wird nun pro Feed-Ordner und mit passendem Titel erstellt
         New-M3uPlaylist -Folder $feedOutputFolder -Title $feedTitle
     }
 }
 
-if (-not $global:SharedState.AbortEvent) {
-    Write-Log "=================================================="
-    Write-Log "SYNCHRONISATION ABGESCHLOSSEN"
-    Write-Log "✅ Heruntergeladen: $totalDownloaded"
-    Write-Log "⏭️ Übersprungen:   $totalSkipped"
-    if ($totalFailed -gt 0) { Write-Log "❌ Fehlgeschlagen:  $totalFailed" -Level "WARN" }
-    Write-Log "=================================================="
-    if ($totalFailed -gt 0) { exit 1 }
-}
+Write-Log "=================================================="
+Write-Log "SYNCHRONISATION ABGESCHLOSSEN"
+Write-Log "✅ Heruntergeladen: $totalDownloaded"
+Write-Log "⏭️ Übersprungen:   $totalSkipped"
+if ($totalFailed -gt 0) { Write-Log "❌ Fehlgeschlagen:  $totalFailed" -Level "WARN" }
+Write-Log "=================================================="
+if ($totalFailed -gt 0) { exit 1 }

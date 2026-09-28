@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Mindestversion und aktuellste Version von Python, jeweils mit PowerShell 7
+          - os: ubuntu-latest
+            python: "3.11"
+            require: python,pwsh
+          - os: ubuntu-latest
+            python: "3.x"
+            require: python,pwsh
+          # Windows zusätzlich mit Windows PowerShell 5.1 (powershell.exe)
+          - os: windows-latest
+            python: "3.11"
+            require: python,pwsh,powershell
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Versionen anzeigen
+        shell: pwsh
+        run: |
+          python --version
+          pwsh -NoProfile -Command '"pwsh " + $PSVersionTable.PSVersion'
+          if ($IsWindows) { powershell -NoProfile -Command '"powershell " + $PSVersionTable.PSVersion' }
+
+      - name: pytest installieren
+        run: python -m pip install pytest
+
+      - name: Tests
+        env:
+          REQUIRE_IMPLS: ${{ matrix.require }}
+        run: python -m pytest -v

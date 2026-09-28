@@ -25,11 +25,15 @@ from email.utils import parsedate_to_datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Tuple, Optional, Dict, Any
 
+if sys.version_info < (3, 11):
+    sys.exit(f"Dieses Skript benötigt Python 3.11 oder neuer (gefunden: {sys.version.split()[0]}).")
+
 # ==============================================================================
 # KONSTANTEN & DEFAULTS
 # ==============================================================================
+SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_RSS_URL = "https://beispiel-url.de/podcast/feed.rss"
-DEFAULT_DOWNLOAD_FOLDER = str(Path(__file__).resolve().parent / "Podcasts")
+DEFAULT_DOWNLOAD_FOLDER = str(SCRIPT_DIR / "Podcasts")
 DEFAULT_LIMIT = 0
 DEFAULT_TIMEOUT = 60
 DEFAULT_WORKERS = 1
@@ -71,8 +75,12 @@ class ColorFormatter(logging.Formatter):
         return super().format(record)
 
 def setup_logging() -> None:
+    # Bei umgeleiteter Ausgabe (z.B. "> log.txt" oder Aufgabenplanung) nutzt Windows cp1252,
+    # das ✔ und Emojis nicht kodieren kann -> UnicodeEncodeError. UTF-8 erzwingen.
+    for stream in (sys.stdout, sys.stderr):
+        stream.reconfigure(encoding="utf-8", errors="replace")
     if os.name == 'nt':
-        os.system("") 
+        os.system("")
     handler = logging.StreamHandler()
     handler.setFormatter(ColorFormatter('%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S'))
     logging.basicConfig(level=logging.INFO, handlers=[handler])
@@ -194,9 +202,10 @@ def load_manifest(folder: Path) -> Dict[str, str]:
     if not manifest_path.exists():
         return {}
     try:
-        with open(manifest_path, 'r', encoding='utf-8') as f:
+        # utf-8-sig: Windows PowerShell 5.1 schreibt das Manifest mit BOM
+        with open(manifest_path, 'r', encoding='utf-8-sig') as f:
             return json.load(f)
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return {}
 
 def save_manifest(folder: Path, manifest: Dict[str, str]) -> None:
@@ -435,26 +444,42 @@ def main() -> int:
     args.workers = max(1, args.workers)
 
     feed_urls = []
-    config_provided = args.config is not None
-    config_file = args.config if args.config else "config.json"
-    
-    if Path(config_file).exists():
-        logging.info(f"Lade Konfiguration aus: {config_file}")
-        with open(config_file, 'r', encoding='utf-8') as f:
-            cfg = json.load(f)
-            if "url" in cfg: feed_urls.append(cfg["url"])
-            if "urls" in cfg: feed_urls.extend(cfg["urls"])
-            if "output" in cfg and args.output == DEFAULT_DOWNLOAD_FOLDER: args.output = cfg["output"]
-            
-            if "limit" in cfg and args.limit == DEFAULT_LIMIT: args.limit = cfg["limit"]
-            if "workers" in cfg and args.workers == DEFAULT_WORKERS: args.workers = max(1, cfg["workers"])
-            if "retries" in cfg and args.retries == 3: args.retries = cfg["retries"]
-            if "timeout" in cfg and args.timeout == DEFAULT_TIMEOUT: args.timeout = cfg["timeout"]
-            if "m3u" in cfg and not args.m3u: args.m3u = cfg["m3u"]
-            if "dry_run" in cfg and not args.dry_run: args.dry_run = cfg["dry_run"]
-            if "flat" in cfg and not args.flat: args.flat = cfg["flat"]
-    elif config_provided:
-        logging.warning(f"Angegebene Konfigurationsdatei nicht gefunden: {config_file}")
+    if args.config:
+        config_path = Path(args.config)
+    else:
+        # Automatische Erkennung: zuerst im aktuellen Verzeichnis, dann im Skriptordner
+        # (z.B. Cron/Aufgabenplanung, die in einem anderen Arbeitsverzeichnis starten)
+        config_path = next((p for p in (Path.cwd() / "config.json", SCRIPT_DIR / "config.json") if p.exists()), None)
+
+    if config_path is not None and config_path.exists():
+        logging.info(f"Lade Konfiguration aus: {config_path}")
+        try:
+            # utf-8-sig: toleriert eine BOM (z.B. von älteren Windows-Editoren)
+            with open(config_path, 'r', encoding='utf-8-sig') as f:
+                cfg = json.load(f)
+            if not isinstance(cfg, dict):
+                raise ValueError("Erwartet wird ein JSON-Objekt { ... }")
+        except (OSError, ValueError) as e:
+            # Mit einer kaputten Config weiterzumachen ist sinnlos (Platzhalter-URL, falscher Zielordner)
+            logging.error(f"Fehler beim Lesen der {config_path}: {e}")
+            return 1
+
+        if "url" in cfg: feed_urls.append(cfg["url"])
+        if "urls" in cfg: feed_urls.extend(cfg["urls"])
+        if "output" in cfg and args.output == DEFAULT_DOWNLOAD_FOLDER:
+            # Relative Pfade beziehen sich auf den Ordner der config.json, nicht auf das Arbeitsverzeichnis
+            output = Path(cfg["output"])
+            args.output = str(output if output.is_absolute() else config_path.resolve().parent / output)
+
+        if "limit" in cfg and args.limit == DEFAULT_LIMIT: args.limit = cfg["limit"]
+        if "workers" in cfg and args.workers == DEFAULT_WORKERS: args.workers = max(1, cfg["workers"])
+        if "retries" in cfg and args.retries == 3: args.retries = cfg["retries"]
+        if "timeout" in cfg and args.timeout == DEFAULT_TIMEOUT: args.timeout = cfg["timeout"]
+        if "m3u" in cfg and not args.m3u: args.m3u = cfg["m3u"]
+        if "dry_run" in cfg and not args.dry_run: args.dry_run = cfg["dry_run"]
+        if "flat" in cfg and not args.flat: args.flat = cfg["flat"]
+    elif args.config:
+        logging.warning(f"Angegebene Konfigurationsdatei nicht gefunden: {config_path}")
             
     if args.opml:
         feed_urls.extend(parse_opml(args.opml))
