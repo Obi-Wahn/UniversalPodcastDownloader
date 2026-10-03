@@ -35,9 +35,9 @@ REQUIRED = {i.strip() for i in os.environ.get("REQUIRE_IMPLS", "").split(",") if
 AUDIO = b"ID3" + bytes(4096)
 
 PY_FLAGS = {"url": "--url", "output": "--output", "config": "--config", "retries": "--retries",
-            "workers": "--workers", "flat": "--flat", "dry_run": "--dry-run"}
+            "workers": "--workers", "flat": "--flat", "dry_run": "--dry-run", "m3u": "--m3u"}
 PS_FLAGS = {"url": "-Url", "output": "-Output", "config": "-Config", "retries": "-Retries",
-            "workers": "-Workers", "flat": "-Flat", "dry_run": "-DryRun"}
+            "workers": "-Workers", "flat": "-Flat", "dry_run": "-DryRun", "m3u": "-M3u"}
 
 
 # ------------------------------------------------------------------------------
@@ -49,11 +49,13 @@ class FeedServer:
     def __init__(self):
         self.routes = {}
         self.hits = {}
+        self.request_headers = {}
         server = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 server.hits.setdefault(self.path, []).append(time.monotonic())
+                server.request_headers.setdefault(self.path, []).append(dict(self.headers))
                 responses = server.routes.get(self.path)
                 if not responses:
                     self.send_response(404)
@@ -86,7 +88,7 @@ class FeedServer:
     def add_feed(self, path, title, episodes):
         items = "".join(
             f"<item><title>{ep['title']}</title><guid>{ep['guid']}</guid>"
-            f"<enclosure url=\"{self.url(ep['path'])}\" type=\"audio/mpeg\"/></item>"
+            f"<enclosure url=\"{self.url(ep['path'])}\" type=\"{ep.get('type', 'audio/mpeg')}\"/></item>"
             for ep in episodes
         )
         rss = f'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>{title}</title>{items}</channel></rss>'
@@ -220,6 +222,107 @@ def test_error_page_instead_of_audio_is_rejected(impl, server, script_dir, tmp_p
 
     assert code == 1, output
     assert audio_files(out) == []
+
+
+def test_unreachable_feed_sets_exit_code(impl, server, script_dir, tmp_path):
+    code, output = run(impl, script_dir, tmp_path, url=server.url("/gibt-es-nicht.xml"), output=tmp_path / "out", retries=1)
+
+    assert code == 1, output
+    assert "Feeds mit Fehler: 1" in output
+
+
+def test_stale_own_part_file_is_restarted_but_foreign_files_are_kept(impl, server, script_dir, tmp_path):
+    server.add("/ep1.mp3", AUDIO)
+    feed = server.add_feed("/feed.xml", "Testcast", [{"title": "Folge 1", "guid": "g-1", "path": "/ep1.mp3"}])
+    folder = tmp_path / "out" / "Testcast"
+    (folder / "Unterordner").mkdir(parents=True)
+    eight_days_ago = time.time() - 8 * 86400
+    own_part = folder / "Folge 1.mp3.part"
+    foreign = [folder / "browser-download.zip.part", folder / "Unterordner" / "fremd.mp3.part"]
+    for part in [own_part, *foreign]:
+        part.write_bytes(b"alt")
+        os.utime(part, (eight_days_ago, eight_days_ago))
+
+    code, output = run(impl, script_dir, tmp_path, url=feed, output=tmp_path / "out", retries=1)
+
+    assert code == 0, output
+    assert (folder / "Folge 1.mp3").read_bytes() == AUDIO
+    # Kein "Range"-Header: die veraltete eigene .part-Datei wurde gelöscht statt fortgesetzt
+    assert "Range" not in server.request_headers["/ep1.mp3"][0]
+    for part in foreign:
+        assert part.exists(), f"fremde Datei gelöscht: {part.name}"
+
+
+def test_deleted_episode_is_downloaded_again(impl, server, script_dir, tmp_path):
+    server.add("/ep1.mp3", AUDIO)
+    feed = server.add_feed("/feed.xml", "Testcast", [{"title": "Folge 1", "guid": "g-1", "path": "/ep1.mp3"}])
+    out = tmp_path / "out"
+    assert run(impl, script_dir, tmp_path, url=feed, output=out, retries=1)[0] == 0
+    episode = out / "Testcast" / "Folge 1.mp3"
+    episode.unlink()
+
+    code, output = run(impl, script_dir, tmp_path, url=feed, output=out, retries=1)
+
+    assert code == 0, output
+    assert episode.read_bytes() == AUDIO
+
+
+def test_same_title_gets_unique_name_and_stays_stable(impl, server, script_dir, tmp_path):
+    server.add("/a.mp3", b"ID3-A" + bytes(100))
+    server.add("/b.mp3", b"ID3-B" + bytes(100))
+    server.add("/c.mp3", b"ID3-C" + bytes(100))
+    feed = server.add_feed("/feed.xml", "Testcast", [
+        {"title": "Bonus", "guid": "g-a", "path": "/a.mp3"},
+        {"title": "Bonus", "guid": "g-b", "path": "/b.mp3"},
+        {"title": "Bonus", "guid": "g-a", "path": "/a.mp3"},  # doppelter Feed-Eintrag
+        {"title": "...", "guid": "g-c", "path": "/c.mp3"},     # Titel ergibt keinen gültigen Namen
+    ])
+    out = tmp_path / "out"
+    folder = out / "Testcast"
+
+    code, output = run(impl, script_dir, tmp_path, url=feed, output=out, retries=1)
+
+    assert code == 0, output
+    assert audio_files(out) == ["Bonus (2).mp3", "Bonus.mp3", "Unbenannt.mp3"]
+    assert (folder / "Bonus.mp3").read_bytes().startswith(b"ID3-A")
+    assert (folder / "Bonus (2).mp3").read_bytes().startswith(b"ID3-B")
+
+    # Zweiter Lauf: nichts Neues, Zuordnung bleibt stabil
+    code, output = run(impl, script_dir, tmp_path, url=feed, output=out, retries=1)
+    assert code == 0, output
+    assert audio_files(out) == ["Bonus (2).mp3", "Bonus.mp3", "Unbenannt.mp3"]
+
+
+def test_extension_from_feed_type_and_m3u_lists_all_media(impl, server, script_dir, tmp_path):
+    server.add("/download?id=1", AUDIO, content_type="audio/mp4")  # URL ohne Dateiendung
+    server.add("/ep2.mp3", AUDIO)
+    feed = server.add_feed("/feed.xml", "Testcast", [
+        {"title": "Folge 1", "guid": "g-1", "path": "/download?id=1", "type": "audio/x-m4a"},
+        {"title": "Folge 2", "guid": "g-2", "path": "/ep2.mp3"},
+    ])
+    out = tmp_path / "out"
+
+    code, output = run(impl, script_dir, tmp_path, url=feed, output=out, retries=1, m3u=True)
+
+    assert code == 0, output
+    folder = out / "Testcast"
+    assert (folder / "Folge 1.m4a").exists()
+    playlist = (folder / "Testcast_Playlist.m3u").read_text(encoding="utf-8-sig").splitlines()
+    assert "Folge 1.m4a" in playlist and "Folge 2.mp3" in playlist
+
+
+def test_title_with_brackets_is_recognized_on_rerun(impl, server, script_dir, tmp_path):
+    """PowerShell deutet [ ] bei -Path als Platzhalter - die Folge wurde nie als vorhanden erkannt."""
+    server.add("/ep1.mp3", AUDIO)
+    feed = server.add_feed("/feed.xml", "Testcast [Archiv]", [{"title": "Bonus [Teil 1]", "guid": "g-1", "path": "/ep1.mp3"}])
+    out = tmp_path / "out"
+    assert run(impl, script_dir, tmp_path, url=feed, output=out, retries=1)[0] == 0
+    assert (out / "Testcast [Archiv]" / "Bonus [Teil 1].mp3").exists()
+
+    code, output = run(impl, script_dir, tmp_path, url=feed, output=out, retries=1)
+
+    assert code == 0, output
+    assert len(server.hits["/ep1.mp3"]) == 1, "Folge wurde erneut heruntergeladen"
 
 
 def test_retry_after_header_is_respected(impl, server, script_dir, tmp_path):
