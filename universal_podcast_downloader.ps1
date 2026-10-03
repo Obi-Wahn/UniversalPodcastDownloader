@@ -42,6 +42,22 @@ if (-not $PSBoundParameters.ContainsKey('Output')) { $Output = Join-Path -Path $
 
 $script:ReservedNames = @("CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9")
 
+# Dateiendung aus dem "type"-Attribut des Feeds, falls die URL keine bekannte Endung hat
+$script:MediaTypes = @{
+    "audio/mpeg" = ".mp3"; "audio/mp3" = ".mp3"; "audio/x-mpeg" = ".mp3"
+    "audio/mp4" = ".m4a"; "audio/x-m4a" = ".m4a"; "audio/m4a" = ".m4a"
+    "audio/aac" = ".aac"; "audio/x-aac" = ".aac"; "audio/ogg" = ".ogg"; "audio/opus" = ".opus"
+    "audio/flac" = ".flac"; "audio/x-flac" = ".flac"; "audio/wav" = ".wav"; "audio/x-wav" = ".wav"
+    "video/mp4" = ".mp4"; "video/x-m4v" = ".m4v"
+}
+$script:MediaExtensions = @($script:MediaTypes.Values) + @(".m4b", ".oga") | Select-Object -Unique
+
+# Eigene .part-Dateien, die älter sind, werden nicht fortgesetzt, sondern neu begonnen
+$script:PartMaxAgeDays = 7
+
+# Hinweis: Dateipfade immer mit -LiteralPath ansprechen. Mit -Path deutet PowerShell
+# eckige Klammern als Platzhalter, und "Bonus [Teil 1].mp3" würde nie gefunden.
+
 function Write-Log {
     param([string]$Message, [string]$Level="INFO")
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
@@ -61,8 +77,38 @@ function Get-SafeFileName {
     $safeTitle = $Title -replace '[\x00-\x1F<>:"/\\|?*]', '-'
     $safeTitle = $safeTitle.TrimEnd('. ').Trim()
     if ($safeTitle.Length -gt 150) { $safeTitle = $safeTitle.Substring(0, 150).TrimEnd('. ').Trim() }
+    # Ein Titel nur aus Punkten/Leerzeichen bekäme sonst einen leeren Namen
+    if ([string]::IsNullOrWhiteSpace($safeTitle)) { $safeTitle = "Unbenannt" }
     if ($script:ReservedNames -contains $safeTitle.ToUpper()) { $safeTitle = "Episode_$safeTitle" }
     return $safeTitle
+}
+
+function Get-MediaExtension {
+    # Dateiendung aus der URL, sonst aus dem "type"-Attribut des Feeds, sonst .mp3
+    param([string]$Url, [string]$MediaType)
+    $suffix = ""
+    try { $suffix = [System.IO.Path]::GetExtension(([System.Uri]$Url).AbsolutePath) } catch {}
+    if ($script:MediaExtensions -contains $suffix.ToLower()) { return $suffix }
+    $fromType = $script:MediaTypes[($MediaType -split ';')[0].Trim().ToLower()]
+    if ($fromType) { return $fromType }
+    # Unbekannte, aber plausible Endung beibehalten (z.B. .wma); Unsinn wie ".mp3:x" verwerfen
+    if ($suffix -match '^\.[A-Za-z0-9]{1,5}$') { return $suffix }
+    return ".mp3"
+}
+
+function Get-UniqueFileName {
+    # Liefert einen Dateinamen, der keiner anderen Folge gehört, und reserviert ihn für $Key.
+    # $Claimed bildet Dateinamen auf den Dedup-Schlüssel ihrer Folge ab; PowerShell-Hashtables
+    # ignorieren Groß-/Kleinschreibung, genau wie Windows bei Dateinamen.
+    param([string]$Base, [string]$Extension, [string]$Key, [hashtable]$Claimed)
+    $name = "$Base$Extension"
+    $n = 2
+    while ($Claimed.ContainsKey($name) -and $Claimed[$name] -ne $Key) {
+        $name = "$Base ($n)$Extension"
+        $n++
+    }
+    $Claimed[$name] = $Key
+    return $name
 }
 
 function Get-DownloadManifest {
@@ -70,12 +116,15 @@ function Get-DownloadManifest {
     # damit ein geänderter Titel keinen erneuten Download derselben Episode auslöst.
     param([string]$Folder)
     $manifestPath = Join-Path -Path $Folder -ChildPath ".downloaded.json"
-    if (-not (Test-Path $manifestPath)) { return @{} }
+    if (-not (Test-Path -LiteralPath $manifestPath)) { return @{} }
     try {
         $raw = Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $manifest = @{}
-        if ($raw) {
-            foreach ($prop in $raw.PSObject.Properties) { $manifest[$prop.Name] = $prop.Value }
+        # Beschädigte/von Hand editierte Manifeste: nur gültige Einträge (Schlüssel -> Dateiname) übernehmen
+        if ($raw -is [System.Management.Automation.PSCustomObject]) {
+            foreach ($prop in $raw.PSObject.Properties) {
+                if ($prop.Value -is [string] -and $prop.Value) { $manifest[$prop.Name] = $prop.Value }
+            }
         }
         return $manifest
     } catch { return @{} }
@@ -85,21 +134,9 @@ function Save-DownloadManifest {
     param([string]$Folder, [hashtable]$Manifest)
     $manifestPath = Join-Path -Path $Folder -ChildPath ".downloaded.json"
     try {
-        $Manifest | ConvertTo-Json | Out-File -FilePath $manifestPath -Encoding UTF8
+        $Manifest | ConvertTo-Json | Out-File -LiteralPath $manifestPath -Encoding UTF8
     } catch {
         Write-Log "Konnte Manifest nicht speichern: $_" -Level "ERROR"
-    }
-}
-
-function Invoke-CleanupOldParts {
-    param([string]$Folder, [int]$DaysOld = 7)
-    if (-not (Test-Path $Folder)) { return }
-    $cutoffDate = (Get-Date).AddDays(-$DaysOld)
-    $oldParts = Get-ChildItem -Path $Folder -Filter "*.part" -Recurse | Where-Object { $_.LastWriteTime -lt $cutoffDate }
-
-    if ($oldParts) {
-        $oldParts | Remove-Item -Force
-        Write-Log "Bereinigung: $($oldParts.Count) veraltete .part-Datei(en) gelöscht." -Level "INFO"
     }
 }
 
@@ -125,8 +162,8 @@ function Invoke-RobustDownload {
             $initialSize = 0
             $appendMode = $false
 
-            if (Test-Path -Path $PartPath) {
-                $initialSize = (Get-Item -Path $PartPath).Length
+            if (Test-Path -LiteralPath $PartPath) {
+                $initialSize = (Get-Item -LiteralPath $PartPath).Length
                 if ($initialSize -gt 0) {
                     $request.AddRange($initialSize)
                     $appendMode = $true
@@ -203,7 +240,7 @@ function Invoke-RobustDownload {
 
             if ($oversized) {
                 Write-Log "Datei überschreitet 1GB-Limit während des Downloads, Abbruch: $(Split-Path $FinalPath -Leaf)" -Level "WARN"
-                if (Test-Path $PartPath) { Remove-Item $PartPath -Force }
+                if (Test-Path -LiteralPath $PartPath) { Remove-Item -LiteralPath $PartPath -Force }
                 return $false
             }
 
@@ -211,7 +248,7 @@ function Invoke-RobustDownload {
                 throw "Download unvollständig (Verbindung abgerissen)."
             }
 
-            Move-Item -Path $PartPath -Destination $FinalPath -Force
+            Move-Item -LiteralPath $PartPath -Destination $FinalPath -Force
             return $true
 
         } catch {
@@ -256,7 +293,7 @@ function Invoke-RobustDownload {
                 Start-Sleep -Milliseconds ([int]($sleepTime * 1000))
             } else {
                 Write-Log "Fehlgeschlagen nach $MaxRetries Versuchen: $(Split-Path $FinalPath -Leaf)" -Level "ERROR"
-                if (Test-Path $PartPath) { Remove-Item $PartPath -Force }
+                if (Test-Path -LiteralPath $PartPath) { Remove-Item -LiteralPath $PartPath -Force }
             }
         }
     }
@@ -265,13 +302,13 @@ function Invoke-RobustDownload {
 
 function New-M3uPlaylist {
     param([string]$Folder, [string]$Title)
-    $mp3Files = Get-ChildItem -Path $Folder -Filter "*.mp3" | Sort-Object Name
-    if (-not $mp3Files) { return }
+    $mediaFiles = @(Get-ChildItem -LiteralPath $Folder -File | Where-Object { $script:MediaExtensions -contains $_.Extension.ToLower() } | Sort-Object Name)
+    if ($mediaFiles.Count -eq 0) { return }
 
     try {
         $playlistPath = Join-Path -Path $Folder -ChildPath "$Title`_Playlist.m3u"
-        $content = @("#EXTM3U") + ($mp3Files.Name)
-        $content | Out-File -FilePath $playlistPath -Encoding UTF8
+        $content = @("#EXTM3U") + @($mediaFiles.Name)
+        $content | Out-File -LiteralPath $playlistPath -Encoding UTF8
         Write-Log "M3U-Playlist generiert: $(Split-Path $playlistPath -Leaf)" -Level "INFO"
     } catch {
         Write-Log "Konnte M3U nicht erstellen: $_" -Level "ERROR"
@@ -329,7 +366,7 @@ if (-not [string]::IsNullOrWhiteSpace($configToLoad)) {
     }
 }
 
-if (-not [string]::IsNullOrWhiteSpace($Opml) -and (Test-Path $Opml)) {
+if (-not [string]::IsNullOrWhiteSpace($Opml) -and (Test-Path -LiteralPath $Opml)) {
     try {
         [xml]$opmlXml = Get-Content -LiteralPath $Opml -Raw -Encoding UTF8
         $feedUrls += @($opmlXml.SelectNodes("//outline[@xmlUrl]") | ForEach-Object { $_.xmlUrl })
@@ -349,12 +386,9 @@ foreach ($f in $feedUrls) {
 }
 $feedUrls = $uniqueUrls
 
-if (-not $DryRun) {
-    if (-not (Test-Path -Path $Output)) {
-        New-Item -ItemType Directory -Path $Output | Out-Null
-        Write-Log "Basis-Verzeichnis erstellt: $Output" -Level "SUCCESS"
-    }
-    Invoke-CleanupOldParts -Folder $Output
+if (-not $DryRun -and -not (Test-Path -LiteralPath $Output)) {
+    [System.IO.Directory]::CreateDirectory($Output) | Out-Null
+    Write-Log "Basis-Verzeichnis erstellt: $Output" -Level "SUCCESS"
 }
 
 if ($PSVersionTable.PSEdition -eq "Desktop") {
@@ -365,6 +399,7 @@ if ($PSVersionTable.PSEdition -eq "Desktop") {
 $totalDownloaded = 0
 $totalSkipped = 0
 $totalFailed = 0
+$failedFeeds = 0
 
 foreach ($feedUrl in $feedUrls) {
     Write-Log "Analysiere Feed: $feedUrl"
@@ -375,6 +410,7 @@ foreach ($feedUrl in $feedUrls) {
         [xml]$feed = $feedRequest.Content
     } catch {
         Write-Log "Überspringe Feed wegen Fehler: $_" -Level "ERROR"
+        $failedFeeds++
         continue
     }
 
@@ -389,13 +425,18 @@ foreach ($feedUrl in $feedUrls) {
     # -Flat: Episoden landen ohne Unterordner direkt im Zielverzeichnis
     $feedOutputFolder = if ($Flat) { $Output } else { Join-Path -Path $Output -ChildPath $feedTitle }
 
-    if (-not $DryRun -and -not (Test-Path $feedOutputFolder)) {
-        New-Item -ItemType Directory -Path $feedOutputFolder | Out-Null
+    if (-not $DryRun) {
+        [System.IO.Directory]::CreateDirectory($feedOutputFolder) | Out-Null
     }
 
     # GUID-Manifest laden: erkennt bereits geladene Episoden auch dann wieder,
     # wenn sich der Titel (und damit der Dateiname) im Feed geändert hat.
     $manifest = Get-DownloadManifest -Folder $feedOutputFolder
+    $manifestChanged = $false
+    $claimed = @{}
+    foreach ($entry in $manifest.GetEnumerator()) { $claimed[[string]$entry.Value] = $entry.Key }
+    $seenKeys = @{}
+    $staleParts = 0
 
     $items = $feed.SelectNodes("//*[local-name()='item' or local-name()='entry']")
     if (-not $items -or $items.Count -eq 0) { continue }
@@ -409,46 +450,70 @@ foreach ($feedUrl in $feedUrls) {
         $title = if ($titleNode) { $titleNode.InnerText.Trim() } else { "Unbekannte_Episode" }
 
         $mediaUrl = $null
+        $mediaType = ""
         $enclosure = $item.SelectSingleNode("*[local-name()='enclosure']")
-        if ($enclosure -and $enclosure.HasAttribute("url")) { $mediaUrl = $enclosure.GetAttribute("url") }
-        else {
+        if ($enclosure -and $enclosure.HasAttribute("url")) {
+            $mediaUrl = $enclosure.GetAttribute("url")
+            $mediaType = $enclosure.GetAttribute("type")
+        } else {
             $linkNode = $item.SelectSingleNode("*[local-name()='link' and @rel='enclosure']")
-            if ($linkNode -and $linkNode.HasAttribute("href")) { $mediaUrl = $linkNode.GetAttribute("href") }
-        }
-
-        if (-not [string]::IsNullOrWhiteSpace($mediaUrl)) {
-            $safeTitle = Get-SafeFileName -Title $title
-
-            $guidNode = $item.SelectSingleNode("*[local-name()='guid' or local-name()='id']")
-            $guid = if ($guidNode -and -not [string]::IsNullOrWhiteSpace($guidNode.InnerText)) { $guidNode.InnerText.Trim() } else { $null }
-            $dedupKey = if ($guid) { $guid } else { $mediaUrl }
-
-            $prefix = ""
-            $epNode = $item.SelectSingleNode("*[local-name()='episode']")
-            if ($epNode -and $epNode.InnerText -match "^\d+$") { $prefix = "{0:D3} - " -f [int]($epNode.InnerText.Trim()) }
-            else {
-                $pubDateNode = $item.SelectSingleNode("*[local-name()='pubDate' or local-name()='published' or local-name()='updated']")
-                if ($pubDateNode) { try { $prefix = ([datetime]$pubDateNode.InnerText).ToString("yyyy-MM-dd") + " - " } catch {} }
-            }
-
-            $urlWithoutQuery = $mediaUrl.Split('?')[0]
-            $extension = [System.IO.Path]::GetExtension($urlWithoutQuery)
-            if ([string]::IsNullOrWhiteSpace($extension)) { $extension = ".mp3" }
-
-            $fileName = "$prefix$safeTitle$extension"
-            # Speichere die Datei im neuen Feed-Unterordner
-            $filePath = Join-Path -Path $feedOutputFolder -ChildPath $fileName
-            $partPath = "$filePath.part"
-
-            # Dedup primär über die GUID, zusätzlich über Dateiexistenz (Altbestand ohne Manifest)
-            if ($manifest.ContainsKey($dedupKey) -or (Test-Path -Path $filePath)) {
-                Write-Log "Überspringe: $fileName" -Level "INFO"
-                $totalSkipped++
-            } else {
-                $tasks += [PSCustomObject]@{ Url = $mediaUrl; Final = $filePath; Part = $partPath; Name = $fileName; DedupKey = $dedupKey }
+            if ($linkNode -and $linkNode.HasAttribute("href")) {
+                $mediaUrl = $linkNode.GetAttribute("href")
+                $mediaType = $linkNode.GetAttribute("type")
             }
         }
+        if ([string]::IsNullOrWhiteSpace($mediaUrl)) { continue }
+
+        $guidNode = $item.SelectSingleNode("*[local-name()='guid' or local-name()='id']")
+        $guid = if ($guidNode -and -not [string]::IsNullOrWhiteSpace($guidNode.InnerText)) { $guidNode.InnerText.Trim() } else { $null }
+        $dedupKey = if ($guid) { $guid } else { $mediaUrl }
+        if ($seenKeys.ContainsKey($dedupKey)) { continue }   # Dieselbe Folge steht doppelt im Feed
+        $seenKeys[$dedupKey] = $true
+
+        # Bereits geladen (ggf. unter altem Namen, falls sich der Titel geändert hat)?
+        # Fehlt die Datei, wurde sie gelöscht -> erneut herunterladen.
+        $recorded = $manifest[$dedupKey]
+        if ($recorded -and (Test-Path -LiteralPath (Join-Path -Path $feedOutputFolder -ChildPath $recorded))) {
+            Write-Log "Überspringe: $recorded" -Level "INFO"
+            $totalSkipped++
+            continue
+        }
+
+        $prefix = ""
+        $epNode = $item.SelectSingleNode("*[local-name()='episode']")
+        if ($epNode -and $epNode.InnerText -match "^\d+$") { $prefix = "{0:D3} - " -f [int]($epNode.InnerText.Trim()) }
+        else {
+            $pubDateNode = $item.SelectSingleNode("*[local-name()='pubDate' or local-name()='published' or local-name()='updated']")
+            if ($pubDateNode) { try { $prefix = ([datetime]$pubDateNode.InnerText).ToString("yyyy-MM-dd") + " - " } catch {} }
+        }
+
+        # Eindeutiger Name: gleicher Titel bei verschiedenen Folgen bekommt " (2)" usw.
+        $extension = Get-MediaExtension -Url $mediaUrl -MediaType $mediaType
+        $fileName = Get-UniqueFileName -Base "$prefix$(Get-SafeFileName -Title $title)" -Extension $extension -Key $dedupKey -Claimed $claimed
+        $filePath = Join-Path -Path $feedOutputFolder -ChildPath $fileName
+        $partPath = "$filePath.part"
+
+        # Altbestand ohne Manifest-Eintrag: vorhandene Datei übernehmen statt neu zu laden
+        if (Test-Path -LiteralPath $filePath) {
+            Write-Log "Überspringe: $fileName" -Level "INFO"
+            $totalSkipped++
+            $manifest[$dedupKey] = $fileName
+            $manifestChanged = $true
+            continue
+        }
+
+        # Nur eigene .part-Dateien anfassen: zu alte werden neu begonnen statt fortgesetzt
+        if (-not $DryRun -and (Test-Path -LiteralPath $partPath) -and
+            (Get-Item -LiteralPath $partPath).LastWriteTime -lt (Get-Date).AddDays(-$script:PartMaxAgeDays)) {
+            Remove-Item -LiteralPath $partPath -Force
+            $staleParts++
+        }
+
+        $tasks += [PSCustomObject]@{ Url = $mediaUrl; Final = $filePath; Part = $partPath; Name = $fileName; DedupKey = $dedupKey }
     }
+
+    if ($staleParts -gt 0) { Write-Log "Bereinigung: $staleParts veraltete .part-Datei(en) gelöscht." -Level "INFO" }
+    if ($manifestChanged -and -not $DryRun) { Save-DownloadManifest -Folder $feedOutputFolder -Manifest $manifest }
 
     if ($DryRun) {
         foreach ($t in $tasks) { Write-Log "DRY-RUN: Würde laden: $($t.Name)" -Level "INFO" }
@@ -514,5 +579,6 @@ Write-Log "SYNCHRONISATION ABGESCHLOSSEN"
 Write-Log "✅ Heruntergeladen: $totalDownloaded"
 Write-Log "⏭️ Übersprungen:   $totalSkipped"
 if ($totalFailed -gt 0) { Write-Log "❌ Fehlgeschlagen:  $totalFailed" -Level "WARN" }
+if ($failedFeeds -gt 0) { Write-Log "❌ Feeds mit Fehler: $failedFeeds" -Level "WARN" }
 Write-Log "=================================================="
-if ($totalFailed -gt 0) { exit 1 }
+if ($totalFailed -gt 0 -or $failedFeeds -gt 0) { exit 1 }

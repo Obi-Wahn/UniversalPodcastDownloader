@@ -54,6 +54,19 @@ MANIFEST_FILENAME = ".downloaded.json"
 # Content-Types, die auf eine Fehlerseite statt echter Audiodaten hindeuten
 REJECTED_CONTENT_TYPES = {"text/html", "text/plain", "application/json", "application/xml", "text/xml"}
 
+# Dateiendung aus dem "type"-Attribut des Feeds, falls die URL keine bekannte Endung hat
+MEDIA_TYPES = {
+    "audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/x-mpeg": ".mp3",
+    "audio/mp4": ".m4a", "audio/x-m4a": ".m4a", "audio/m4a": ".m4a",
+    "audio/aac": ".aac", "audio/x-aac": ".aac", "audio/ogg": ".ogg", "audio/opus": ".opus",
+    "audio/flac": ".flac", "audio/x-flac": ".flac", "audio/wav": ".wav", "audio/x-wav": ".wav",
+    "video/mp4": ".mp4", "video/x-m4v": ".m4v",
+}
+MEDIA_EXTENSIONS = set(MEDIA_TYPES.values()) | {".m4b", ".oga"}
+
+# Eigene .part-Dateien, die älter sind, werden nicht fortgesetzt, sondern neu begonnen
+PART_MAX_AGE_SECONDS = 7 * 86400
+
 ABORT_EVENT = threading.Event()
 
 # ==============================================================================
@@ -179,22 +192,37 @@ def validate_url(url: str) -> bool:
 def clean_filename(title: str) -> str:
     # Entfernt unsichtbare Steuerzeichen (\x00-\x1f) und illegale Windows-Zeichen
     safe_title = re.sub(r'[\x00-\x1f<>:"/\\|?*]', '-', title)
-    # Entfernt trailing spaces und dots (ungültig am Dateiende in Windows)
-    safe_title = safe_title[:150].strip(' .')
-    
+    # Entfernt trailing spaces und dots (ungültig am Dateiende in Windows);
+    # ein Titel nur aus Punkten/Leerzeichen bekäme sonst einen leeren Namen
+    safe_title = safe_title[:150].strip(' .') or "Unbenannt"
+
     if safe_title.upper() in RESERVED_NAMES:
         safe_title = f"Episode_{safe_title}"
     return safe_title
 
-def cleanup_old_parts(folder: Path, days_old: int = 7) -> None:
-    now = time.time()
-    count = 0
-    for part_file in folder.glob("*.part"):
-        if now - part_file.stat().st_mtime > (days_old * 86400):
-            part_file.unlink()
-            count += 1
-    if count > 0:
-        logging.info(f"Bereinigung: {count} veraltete .part-Datei(en) gelöscht.")
+def media_extension(url: str, media_type: Optional[str]) -> str:
+    """Dateiendung aus der URL, sonst aus dem "type"-Attribut des Feeds, sonst .mp3."""
+    suffix = Path(urlparse(url).path).suffix
+    if suffix.lower() in MEDIA_EXTENSIONS:
+        return suffix
+    from_type = MEDIA_TYPES.get((media_type or "").split(";")[0].strip().lower())
+    if from_type:
+        return from_type
+    # Unbekannte, aber plausible Endung beibehalten (z.B. .wma); Unsinn wie ".mp3:x" verwerfen
+    return suffix if re.fullmatch(r"\.[A-Za-z0-9]{1,5}", suffix) else ".mp3"
+
+def unique_file_name(base: str, ext: str, key: str, claimed: Dict[str, str]) -> str:
+    """Liefert einen Dateinamen, der keiner anderen Folge gehört, und reserviert ihn für `key`.
+
+    `claimed` bildet Dateinamen (casefold, da Windows Groß-/Kleinschreibung ignoriert)
+    auf den Dedup-Schlüssel der Folge ab, der sie gehören.
+    """
+    name, n = f"{base}{ext}", 2
+    while claimed.get(name.casefold(), key) != key:
+        name = f"{base} ({n}){ext}"
+        n += 1
+    claimed[name.casefold()] = key
+    return name
 
 def load_manifest(folder: Path) -> Dict[str, str]:
     """Lädt das GUID-Manifest eines Feed-Ordners (leeres Dict, falls nicht vorhanden/lesbar)."""
@@ -204,9 +232,13 @@ def load_manifest(folder: Path) -> Dict[str, str]:
     try:
         # utf-8-sig: Windows PowerShell 5.1 schreibt das Manifest mit BOM
         with open(manifest_path, 'r', encoding='utf-8-sig') as f:
-            return json.load(f)
+            data = json.load(f)
     except (json.JSONDecodeError, OSError, UnicodeDecodeError):
         return {}
+    # Beschädigte/von Hand editierte Manifeste: nur gültige Einträge (Schlüssel -> Dateiname) übernehmen
+    if not isinstance(data, dict):
+        return {}
+    return {key: name for key, name in data.items() if isinstance(name, str) and name}
 
 def save_manifest(folder: Path, manifest: Dict[str, str]) -> None:
     """Speichert das GUID-Manifest eines Feed-Ordners."""
@@ -282,9 +314,10 @@ def parse_feed(url: str, headers: Dict[str, str], timeout: int) -> Tuple[str, Li
     items = [elem for elem in root.iter() if elem.tag.endswith('item') or elem.tag.endswith('entry')]
     return feed_title, items
 
-def extract_episode_data(item: ET.Element) -> Tuple[str, Optional[str], str, Optional[str]]:
+def extract_episode_data(item: ET.Element) -> Tuple[str, Optional[str], str, Optional[str], Optional[str]]:
     title = "Unbekannte_Episode"
     mp3_url = None
+    media_type = None
     prefix = ""
     guid = None
 
@@ -295,8 +328,10 @@ def extract_episode_data(item: ET.Element) -> Tuple[str, Optional[str], str, Opt
             title = child.text.strip()
         elif tag_name == 'enclosure' and child.get('url'):
             mp3_url = child.get('url')
+            media_type = child.get('type')
         elif tag_name == 'link' and child.get('rel') == 'enclosure' and child.get('href'):
             mp3_url = child.get('href')
+            media_type = child.get('type')
         elif tag_name in ('guid', 'id') and child.text and not guid:
             # RSS <guid> bzw. Atom <id> - eindeutiger Bezeichner der Episode fürs Dedup-Manifest
             guid = child.text.strip()
@@ -309,7 +344,7 @@ def extract_episode_data(item: ET.Element) -> Tuple[str, Optional[str], str, Opt
             except (ValueError, TypeError):
                 pass
 
-    return title, mp3_url, prefix, guid
+    return title, mp3_url, prefix, guid, media_type
 
 def download_episode(url: str, final_path: Path, part_path: Path, headers: Dict[str, str], 
                      max_retries: int, timeout_sec: int, pm: ProgressManager) -> bool:
@@ -406,16 +441,16 @@ def download_episode(url: str, final_path: Path, part_path: Path, headers: Dict[
 
 def generate_m3u(folder: Path, feed_title: str) -> None:
     playlist_path = folder / f"{clean_filename(feed_title)}_Playlist.m3u"
-    mp3_files = sorted(folder.glob("*.mp3"))
-    
-    if not mp3_files:
+    media_files = sorted(p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in MEDIA_EXTENSIONS)
+
+    if not media_files:
         return
 
     try:
         with open(playlist_path, 'w', encoding='utf-8') as f:
             f.write("#EXTM3U\n")
-            for mp3 in mp3_files:
-                f.write(f"{mp3.name}\n")
+            for media in media_files:
+                f.write(f"{media.name}\n")
         logging.info(f"M3U-Playlist generiert: {playlist_path.name}")
     except Exception as e:
         logging.error(f"Konnte M3U nicht erstellen: {e}")
@@ -502,14 +537,16 @@ def main() -> int:
     total_downloaded = 0
     total_skipped = 0
     total_failed = 0
+    failed_feeds = 0
 
     for feed_url in feed_urls:
         if ABORT_EVENT.is_set(): break
-        
+
         try:
             feed_title, items = parse_feed(feed_url, headers, args.timeout)
         except Exception as e:
             logging.error(f"Überspringe Feed wegen Fehler: {e}")
+            failed_feeds += 1
             continue
             
         if args.limit > 0:
@@ -525,32 +562,59 @@ def main() -> int:
         
         if not args.dry_run:
             feed_output_folder.mkdir(parents=True, exist_ok=True)
-            cleanup_old_parts(feed_output_folder)
 
         # GUID-Manifest laden: erkennt bereits geladene Episoden auch dann wieder,
         # wenn sich der Titel (und damit der Dateiname) im Feed geändert hat.
         manifest = load_manifest(feed_output_folder)
+        manifest_changed = False
+        claimed = {name.casefold(): key for key, name in manifest.items()}
+        seen_keys = set()
+        stale_parts = 0
 
         download_tasks = []
         for item in items:
-            title, mp3_url, prefix, guid = extract_episode_data(item)
+            title, mp3_url, prefix, guid, media_type = extract_episode_data(item)
             if not mp3_url:
                 continue
 
             dedup_key = guid or mp3_url
-            safe_title = clean_filename(title)
-            ext = Path(urlparse(mp3_url).path).suffix or ".mp3"
+            if dedup_key in seen_keys:
+                continue  # Dieselbe Folge steht doppelt im Feed
+            seen_keys.add(dedup_key)
 
-            # Nutze den modifizierten Unterordner
-            file_path = feed_output_folder / f"{prefix}{safe_title}{ext}"
-            part_path = file_path.with_suffix(ext + ".part")
-
-            # Dedup primär über die GUID, zusätzlich über Dateiexistenz (Altbestand ohne Manifest)
-            if dedup_key in manifest or file_path.exists():
-                logging.debug(f"Überspringe: {file_path.name}")
+            # Bereits geladen (ggf. unter altem Namen, falls sich der Titel geändert hat)?
+            # Fehlt die Datei, wurde sie gelöscht -> erneut herunterladen.
+            recorded = manifest.get(dedup_key)
+            if recorded and (feed_output_folder / recorded).exists():
+                logging.debug(f"Überspringe: {recorded}")
                 total_skipped += 1
-            else:
-                download_tasks.append((mp3_url, file_path, part_path, dedup_key))
+                continue
+
+            # Eindeutiger Name: gleicher Titel bei verschiedenen Folgen bekommt " (2)" usw.
+            ext = media_extension(mp3_url, media_type)
+            file_name = unique_file_name(f"{prefix}{clean_filename(title)}", ext, dedup_key, claimed)
+            file_path = feed_output_folder / file_name
+            part_path = feed_output_folder / f"{file_name}.part"
+
+            # Altbestand ohne Manifest-Eintrag: vorhandene Datei übernehmen statt neu zu laden
+            if file_path.exists():
+                logging.debug(f"Überspringe: {file_name}")
+                total_skipped += 1
+                manifest[dedup_key] = file_name
+                manifest_changed = True
+                continue
+
+            # Nur eigene .part-Dateien anfassen: zu alte werden neu begonnen statt fortgesetzt
+            if not args.dry_run and part_path.exists() and time.time() - part_path.stat().st_mtime > PART_MAX_AGE_SECONDS:
+                part_path.unlink()
+                stale_parts += 1
+
+            download_tasks.append((mp3_url, file_path, part_path, dedup_key))
+
+        if stale_parts:
+            logging.info(f"Bereinigung: {stale_parts} veraltete .part-Datei(en) gelöscht.")
+        if manifest_changed and not args.dry_run:
+            save_manifest(feed_output_folder, manifest)
 
         if args.dry_run:
             for _, fpath, _, _ in download_tasks:
@@ -593,7 +657,7 @@ def main() -> int:
                 ABORT_EVENT.set()
                 pm.log_warning("Abbruch durch Benutzer. Stoppe Warteschlange und aktive Downloads...")
                 executor.shutdown(wait=False, cancel_futures=True)
-                sys.exit(0)
+                sys.exit(1)
             finally:
                 if not ABORT_EVENT.is_set():
                     executor.shutdown(wait=True)
@@ -609,9 +673,11 @@ def main() -> int:
         logging.info(f"⏭️ Übersprungen:   {total_skipped}")
         if total_failed > 0:
             logging.warning(f"❌ Fehlgeschlagen:  {total_failed}")
+        if failed_feeds > 0:
+            logging.warning(f"❌ Feeds mit Fehler: {failed_feeds}")
         logging.info("=" * 50)
 
-    return 1 if total_failed > 0 else 0
+    return 1 if total_failed > 0 or failed_feeds > 0 else 0
 
 if __name__ == "__main__":
     try:
@@ -619,4 +685,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         ABORT_EVENT.set()
         print("\n\033[93mAbbruch durch Benutzer.\033[0m")
-        sys.exit(0)
+        sys.exit(1)
