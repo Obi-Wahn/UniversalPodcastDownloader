@@ -200,6 +200,27 @@ def clean_filename(title: str) -> str:
         safe_title = f"Episode_{safe_title}"
     return safe_title
 
+MONTHS = {m: i for i, m in enumerate(
+    ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
+
+def date_prefix(text: Optional[str]) -> str:
+    """Datum für den Dateinamen so, wie es im Feed steht (ohne Zeitzonen-Umrechnung).
+
+    Bewusst per Muster statt per Datums-Parser: So bilden Python und PowerShell für dieselbe
+    Folge denselben Namen - für RFC 822 ("Tue, 01 Sep 2026 ...") und ISO 8601 ("2026-09-01T...").
+    """
+    text = (text or "").strip()
+    if m := re.match(r"(\d{4})-(\d{2})-(\d{2})", text):
+        year, month, day = int(m[1]), int(m[2]), int(m[3])
+    elif m := re.search(r"(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})", text):
+        year, month, day = int(m[3]), MONTHS.get(m[2].lower(), 0), int(m[1])
+    else:
+        return ""
+    try:
+        return f"{datetime(year, month, day):%Y-%m-%d} - "
+    except ValueError:
+        return ""
+
 def media_extension(url: str, media_type: Optional[str]) -> str:
     """Dateiendung aus der URL, sonst aus dem "type"-Attribut des Feeds, sonst .mp3."""
     suffix = Path(urlparse(url).path).suffix
@@ -338,11 +359,7 @@ def extract_episode_data(item: ET.Element) -> Tuple[str, Optional[str], str, Opt
         elif tag_name == 'episode' and child.text and child.text.strip().isdigit():
             prefix = f"{int(child.text.strip()):03d} - "
         elif tag_name in ('pubDate', 'published', 'updated') and not prefix:
-            try:
-                dt = parsedate_to_datetime(child.text)
-                prefix = f"{dt.strftime('%Y-%m-%d')} - "
-            except (ValueError, TypeError):
-                pass
+            prefix = date_prefix(child.text)
 
     return title, mp3_url, prefix, guid, media_type
 
@@ -423,6 +440,11 @@ def download_episode(url: str, final_path: Path, part_path: Path, headers: Dict[
             if ABORT_EVENT.is_set():
                 return False
 
+            # 416: Die .part-Datei passt nicht mehr zur Datei auf dem Server (bereits vollständig
+            # oder serverseitig geändert) -> verwerfen, der nächste Versuch beginnt neu
+            if isinstance(e, urllib.error.HTTPError) and e.code == 416 and part_path.exists():
+                part_path.unlink()
+
             if attempt < max_retries:
                 # Server-seitige Wartezeit (Retry-After bei HTTP 429) hat Vorrang vor dem
                 # gedeckelten Backoff (Maximal 60 Sekunden Wartezeit)
@@ -434,9 +456,9 @@ def download_episode(url: str, final_path: Path, part_path: Path, headers: Dict[
                     if ABORT_EVENT.is_set(): return False
                     time.sleep(0.1)
             else:
+                # .part-Datei behalten: Der nächste Lauf setzt den Download dort fort
+                # (eigene .part-Dateien älter als 7 Tage werden dort neu begonnen)
                 pm.log_error(f"Fehlgeschlagen nach {max_retries} Versuchen: {final_path.name}")
-                if part_path.exists():
-                    part_path.unlink()
     return False
 
 def generate_m3u(folder: Path, feed_title: str) -> None:

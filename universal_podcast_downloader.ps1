@@ -83,6 +83,25 @@ function Get-SafeFileName {
     return $safeTitle
 }
 
+$script:MonthNumbers = @{ jan = 1; feb = 2; mar = 3; apr = 4; may = 5; jun = 6; jul = 7; aug = 8; sep = 9; oct = 10; nov = 11; dec = 12 }
+
+function Get-DatePrefix {
+    # Datum für den Dateinamen so, wie es im Feed steht (ohne Zeitzonen-Umrechnung).
+    # Bewusst per Muster statt per [datetime]: So bilden Python und PowerShell für dieselbe
+    # Folge denselben Namen - für RFC 822 ("Tue, 01 Sep 2026 ...") und ISO 8601 ("2026-09-01T...").
+    param([string]$Text)
+    $Text = "$Text".Trim()
+    if ($Text -match '^(\d{4})-(\d{2})-(\d{2})') {
+        $year = [int]$Matches[1]; $month = [int]$Matches[2]; $day = [int]$Matches[3]
+    } elseif ($Text -match '(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})') {
+        $year = [int]$Matches[3]; $month = [int]$script:MonthNumbers[$Matches[2]]; $day = [int]$Matches[1]
+    } else {
+        return ""
+    }
+    try { return [datetime]::new($year, $month, $day).ToString("yyyy-MM-dd", [System.Globalization.CultureInfo]::InvariantCulture) + " - " }
+    catch { return "" }
+}
+
 function Get-MediaExtension {
     # Dateiendung aus der URL, sonst aus dem "type"-Attribut des Feeds, sonst .mp3
     param([string]$Url, [string]$MediaType)
@@ -283,6 +302,11 @@ function Invoke-RobustDownload {
                         }
                     }
                 }
+                # 416: Die .part-Datei passt nicht mehr zur Datei auf dem Server (bereits vollständig
+                # oder serverseitig geändert) -> verwerfen, der nächste Versuch beginnt neu
+                if ([int]$webResponse.StatusCode -eq 416 -and (Test-Path -LiteralPath $PartPath)) {
+                    Remove-Item -LiteralPath $PartPath -Force
+                }
                 $webResponse.Close()
             }
 
@@ -292,8 +316,9 @@ function Invoke-RobustDownload {
                 Write-Log "Fehler bei Versuch $attempt/${MaxRetries}: $errMsg. Warte ${sleepTime}s..." -Level "WARN"
                 Start-Sleep -Milliseconds ([int]($sleepTime * 1000))
             } else {
+                # .part-Datei behalten: Der nächste Lauf setzt den Download dort fort
+                # (eigene .part-Dateien älter als 7 Tage werden dort neu begonnen)
                 Write-Log "Fehlgeschlagen nach $MaxRetries Versuchen: $(Split-Path $FinalPath -Leaf)" -Level "ERROR"
-                if (Test-Path -LiteralPath $PartPath) { Remove-Item -LiteralPath $PartPath -Force }
             }
         }
     }
@@ -407,7 +432,12 @@ foreach ($feedUrl in $feedUrls) {
     try {
         # Punkt 3: TimeoutSec wird nun korrekt durchgereicht
         $feedRequest = Invoke-WebRequest -Uri $feedUrl -UserAgent $global:SharedState.UserAgent -UseBasicParsing -TimeoutSec $TimeoutSec
-        [xml]$feed = $feedRequest.Content
+        # XML direkt aus den Bytes lesen: .Content liefert bei falschem oder fehlendem Content-Type
+        # (z.B. application/octet-stream) Bytes statt Text, und die Kodierung kommt so aus dem Feed
+        # selbst statt aus dem HTTP-Header (sonst kaputte Umlaute unter Windows PowerShell 5.1)
+        $feedRequest.RawContentStream.Position = 0
+        $feed = New-Object System.Xml.XmlDocument
+        $feed.Load($feedRequest.RawContentStream)
     } catch {
         Write-Log "Überspringe Feed wegen Fehler: $_" -Level "ERROR"
         $failedFeeds++
@@ -479,12 +509,15 @@ foreach ($feedUrl in $feedUrls) {
             continue
         }
 
+        # Präfix wie in der Python-Variante: letzte gültige Episodennummer, sonst erstes lesbares Datum
         $prefix = ""
-        $epNode = $item.SelectSingleNode("*[local-name()='episode']")
-        if ($epNode -and $epNode.InnerText -match "^\d+$") { $prefix = "{0:D3} - " -f [int]($epNode.InnerText.Trim()) }
+        $episodeNumbers = @($item.SelectNodes("*[local-name()='episode']") | ForEach-Object { $_.InnerText.Trim() } | Where-Object { $_ -match '^\d+$' })
+        if ($episodeNumbers.Count -gt 0) { $prefix = "{0:D3} - " -f [int]$episodeNumbers[-1] }
         else {
-            $pubDateNode = $item.SelectSingleNode("*[local-name()='pubDate' or local-name()='published' or local-name()='updated']")
-            if ($pubDateNode) { try { $prefix = ([datetime]$pubDateNode.InnerText).ToString("yyyy-MM-dd") + " - " } catch {} }
+            foreach ($dateNode in $item.SelectNodes("*[local-name()='pubDate' or local-name()='published' or local-name()='updated']")) {
+                $prefix = Get-DatePrefix -Text $dateNode.InnerText
+                if ($prefix) { break }
+            }
         }
 
         # Eindeutiger Name: gleicher Titel bei verschiedenen Folgen bekommt " (2)" usw.

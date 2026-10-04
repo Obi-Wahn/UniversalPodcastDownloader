@@ -15,6 +15,7 @@ aus dem Internet geladen.
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -43,8 +44,44 @@ PS_FLAGS = {"url": "-Url", "output": "-Output", "config": "-Config", "retries": 
 # ------------------------------------------------------------------------------
 # Lokaler Feed-Server
 # ------------------------------------------------------------------------------
+def ranged(data):
+    """Antwortet wie ein Server mit Range-Unterstützung: 206 ab der gewünschten Stelle, 416 dahinter."""
+    def respond(handler):
+        match = re.match(r"bytes=(\d+)-", handler.headers.get("Range") or "")
+        start = int(match[1]) if match else 0
+        if match and start >= len(data):
+            handler.send_response(416)
+            handler.send_header("Content-Range", f"bytes */{len(data)}")
+            handler.send_header("Content-Length", "0")
+            handler.end_headers()
+            return
+        body = data[start:]
+        handler.send_response(206 if match else 200)
+        if match:
+            handler.send_header("Content-Range", f"bytes {start}-{len(data) - 1}/{len(data)}")
+        handler.send_header("Content-Type", "audio/mpeg")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.end_headers()
+        handler.wfile.write(body)
+    return respond
+
+
+def truncated(data, cut):
+    """Kündigt die volle Länge an, bricht aber nach `cut` Bytes ab (wie ein Verbindungsabbruch)."""
+    def respond(handler):
+        handler.send_response(200)
+        handler.send_header("Content-Type", "audio/mpeg")
+        handler.send_header("Content-Length", str(len(data)))
+        handler.end_headers()
+        handler.wfile.write(data[:cut])
+    return respond
+
+
 class FeedServer:
-    """Liefert pro Pfad eine Folge von Antworten; die letzte wiederholt sich."""
+    """Liefert pro Pfad eine Folge von Antworten; die letzte wiederholt sich.
+
+    Eine Antwort ist entweder (Status, Header, Body) oder eine Funktion, die den Request selbst beantwortet.
+    """
 
     def __init__(self):
         self.routes = {}
@@ -62,10 +99,15 @@ class FeedServer:
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
-                status, headers, body = responses[min(len(server.hits[self.path]), len(responses)) - 1]
+                response = responses[min(len(server.hits[self.path]), len(responses)) - 1]
+                if callable(response):
+                    response(self)
+                    return
+                status, headers, body = response
                 self.send_response(status)
                 for key, value in headers.items():
-                    self.send_header(key, value)
+                    if value is not None:
+                        self.send_header(key, value)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -85,14 +127,14 @@ class FeedServer:
     def add_sequence(self, path, responses):
         self.routes[path] = responses
 
-    def add_feed(self, path, title, episodes):
+    def add_feed(self, path, title, episodes, content_type="application/rss+xml; charset=utf-8"):
         items = "".join(
-            f"<item><title>{ep['title']}</title><guid>{ep['guid']}</guid>"
+            f"<item><title>{ep['title']}</title><guid>{ep['guid']}</guid>{ep.get('extra', '')}"
             f"<enclosure url=\"{self.url(ep['path'])}\" type=\"{ep.get('type', 'audio/mpeg')}\"/></item>"
             for ep in episodes
         )
         rss = f'<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>{title}</title>{items}</channel></rss>'
-        self.add(path, rss.encode("utf-8"), content_type="application/rss+xml; charset=utf-8")
+        self.add(path, rss.encode("utf-8"), content_type=content_type)
         return self.url(path)
 
 
@@ -323,6 +365,76 @@ def test_title_with_brackets_is_recognized_on_rerun(impl, server, script_dir, tm
 
     assert code == 0, output
     assert len(server.hits["/ep1.mp3"]) == 1, "Folge wurde erneut heruntergeladen"
+
+
+@pytest.mark.parametrize("feed_content_type", ["application/octet-stream", None], ids=["octet-stream", "ohne-header"])
+def test_feed_with_unusual_content_type_is_read(impl, feed_content_type, server, script_dir, tmp_path):
+    """Falsch konfigurierte Server liefern Feeds als Binärdaten oder ganz ohne Content-Type aus."""
+    server.add("/ep1.mp3", AUDIO)
+    feed = server.add_feed("/feed.xml", "Testcast", [{"title": "Folge 1", "guid": "g-1", "path": "/ep1.mp3"}],
+                           content_type=feed_content_type)
+    out = tmp_path / "out"
+
+    code, output = run(impl, script_dir, tmp_path, url=feed, output=out, retries=1)
+
+    assert code == 0, output
+    assert (out / "Testcast" / "Folge 1.mp3").exists()
+
+
+def test_interrupted_download_is_resumed_on_next_run(impl, server, script_dir, tmp_path):
+    data = bytes(range(256)) * 64
+    server.add_sequence("/ep1.mp3", [truncated(data, 5000), ranged(data)])
+    feed = server.add_feed("/feed.xml", "Testcast", [{"title": "Folge 1", "guid": "g-1", "path": "/ep1.mp3"}])
+    out = tmp_path / "out"
+    part = out / "Testcast" / "Folge 1.mp3.part"
+
+    # 1. Lauf: Verbindung bricht ab -> Fehlschlag, aber die .part-Datei bleibt erhalten
+    code, output = run(impl, script_dir, tmp_path, url=feed, output=out, retries=1)
+    assert code == 1, output
+    assert part.exists(), "Fortschritt verworfen"
+    kept = part.stat().st_size
+    assert 0 < kept <= 5000
+
+    # 2. Lauf: setzt an genau dieser Stelle fort
+    code, output = run(impl, script_dir, tmp_path, url=feed, output=out, retries=1)
+    assert code == 0, output
+    assert server.request_headers["/ep1.mp3"][-1].get("Range") == f"bytes={kept}-"
+    assert (out / "Testcast" / "Folge 1.mp3").read_bytes() == data
+
+
+def test_part_file_rejected_by_server_is_discarded(impl, server, script_dir, tmp_path):
+    """416: Die .part-Datei passt nicht mehr zur Datei auf dem Server -> neu beginnen statt ewig scheitern."""
+    server.add_sequence("/ep1.mp3", [ranged(AUDIO)])
+    feed = server.add_feed("/feed.xml", "Testcast", [{"title": "Folge 1", "guid": "g-1", "path": "/ep1.mp3"}])
+    folder = tmp_path / "out" / "Testcast"
+    folder.mkdir(parents=True)
+    (folder / "Folge 1.mp3.part").write_bytes(b"x" * (len(AUDIO) + 100))
+
+    code, output = run(impl, script_dir, tmp_path, url=feed, output=tmp_path / "out", retries=2)
+
+    assert code == 0, output
+    assert (folder / "Folge 1.mp3").read_bytes() == AUDIO
+
+
+def test_date_prefix_is_identical_in_both_implementations(impl, server, script_dir, tmp_path):
+    """Folgen ohne Episodennummer: Datum so, wie es im Feed steht, unabhängig von der lokalen Zeitzone."""
+    episodes = [
+        # 23:30 in New York ist in Berlin schon der nächste Tag
+        {"title": "Folge A", "guid": "g-a", "path": "/a.mp3", "extra": "<pubDate>Tue, 01 Sep 2026 23:30:00 -0500</pubDate>"},
+        # falscher Wochentag (der 01.09.2026 ist ein Dienstag) - kommt in echten Feeds vor
+        {"title": "Folge B", "guid": "g-b", "path": "/b.mp3", "extra": "<pubDate>Mon, 01 Sep 2026 10:00:00 GMT</pubDate>"},
+        # ISO 8601, wie in Atom-Feeds üblich
+        {"title": "Folge C", "guid": "g-c", "path": "/c.mp3", "extra": "<pubDate>2026-09-03T23:30:00-05:00</pubDate>"},
+    ]
+    for ep in episodes:
+        server.add(ep["path"], AUDIO)
+    feed = server.add_feed("/feed.xml", "Testcast", episodes)
+    out = tmp_path / "out"
+
+    code, output = run(impl, script_dir, tmp_path, env={"TZ": "Europe/Berlin"}, url=feed, output=out, retries=1)
+
+    assert code == 0, output
+    assert audio_files(out) == ["2026-09-01 - Folge A.mp3", "2026-09-01 - Folge B.mp3", "2026-09-03 - Folge C.mp3"]
 
 
 def test_retry_after_header_is_respected(impl, server, script_dir, tmp_path):
