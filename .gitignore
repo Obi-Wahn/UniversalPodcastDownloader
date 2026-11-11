@@ -1,2 +1,13 @@
 __pycache__/
 .pytest_cache/
+
+# Lokale Konfiguration (kann private Feed-URLs mit Zugangstoken enthalten)
+/config.json
+.env
+.env.*
+
+# Lokale Claude-Code-Einstellungen (können freigegebene Befehle samt Zugangsdaten enthalten)
+.claude/settings.local.json
+
+# Standard-Downloadordner im Skriptordner
+/Podcasts/
